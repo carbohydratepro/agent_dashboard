@@ -1,8 +1,8 @@
 {
-  "name": "virtual-office",
+  "name": "agent-dashboard",
   "version": "0.1.0",
   "private": true,
-  "description": "ドット絵ゲーム調の仮想オフィス。AI 社員（claude / codex セッション）にタスクを割り振る TUI。",
+  "description": "claude / codex の CLI セッションを 1 画面で扱うターミナル・ダッシュボード。",
   "type": "module",
   "engines": {
     "node": ">=22.6"
@@ -21,6 +21,6 @@
     "typescript": "^7.0.2"
   },
   "bin": {
-    "virtual-office": "./src/cli.ts"
+    "agent-dashboard": "./src/cli.ts"
   }
 }
