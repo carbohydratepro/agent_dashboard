@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"019ff6a2-024e-7e50-bbe2-56218772a9b3"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"calc.js を確認します。"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/usr/bin/bash -lc \"sed -n '1,240p' calc.js\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/usr/bin/bash -lc \"sed -n '1,240p' calc.js\"","aggregated_output":"export function add(a, b) {\n  return a + b;\n}\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"add"}}
+{"type":"turn.completed","usage":{"input_tokens":32782,"cached_input_tokens":22016,"cache_write_input_tokens":0,"output_tokens":113,"reasoning_output_tokens":0}}

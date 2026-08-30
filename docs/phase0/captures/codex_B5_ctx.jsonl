@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"019ff6a3-c8a3-7fe0-a329-18b7d721e366"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"了解"}}
+{"type":"turn.completed","usage":{"input_tokens":120252,"cached_input_tokens":103680,"cache_write_input_tokens":0,"output_tokens":768,"reasoning_output_tokens":179}}

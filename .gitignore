@@ -1,0 +1,15 @@
+# 依存関係
+node_modules/
+
+# 実行時に作られるもの
+# 既定の保存先は ~/.virtual-office だが、VO_HOME をここに向けることもある
+.virtual-office/
+*.lock
+*.log
+
+# worktree 隔離の作業場所（autoWorktree で作られる）
+worktrees/
+
+# 一時ファイル
+*.tmp
+.DS_Store

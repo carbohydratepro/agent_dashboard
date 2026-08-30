@@ -1,0 +1,26 @@
+{
+  "name": "virtual-office",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ドット絵ゲーム調の仮想オフィス。AI 社員（claude / codex セッション）にタスクを割り振る TUI。",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "test": "node --test 'tests/**/*.test.ts'",
+    "test:watch": "node --test --watch 'tests/**/*.test.ts'",
+    "test:live": "VO_LIVE=1 node --test --test-timeout=900000 'tests/live.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "start": "node src/cli.ts",
+    "demo": "node src/tui/demo.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
+  },
+  "bin": {
+    "virtual-office": "./src/cli.ts"
+  }
+}

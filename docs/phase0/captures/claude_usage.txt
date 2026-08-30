@@ -1,0 +1,16 @@
+You are currently using your subscription to power your Claude Code usage
+
+Current session: 31% used · resets Aug 24, 2:49am (Asia/Tokyo)
+Current week (all models): 22% used · resets Aug 23, 11:59pm (Asia/Tokyo)
+
+What's contributing to your limits usage?
+Approximate, based on local sessions on this machine — does not include other devices or claude.ai. Behaviors are independent characteristics, not a breakdown.
+
+Last 24h · 183 requests · 4 sessions
+  73% of your usage was at >150k context
+  Top skills: /artifact-design 2%
+
+Last 7d · 388 requests · 16 sessions
+  86% of your usage was at >150k context
+  16% of your usage came from sessions active for 8+ hours
+  Top skills: /artifact-design 1%
