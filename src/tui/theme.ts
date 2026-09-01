@@ -11,6 +11,8 @@ export interface Theme {
   textDim: number;
   textBright: number;
   accent: number;
+  /** 自分が書いた文。回答と一目で区別するために使う。 */
+  userText: number;
   system: number;
   gauge: { good: number; warn: number; high: number; critical: number };
   state: Record<SessionState, number>;
@@ -27,6 +29,7 @@ export const DEFAULT_THEME: Theme = {
   textDim: 0x768390,
   textBright: 0xf0f6fc,
   accent: 0x58a6ff,
+  userText: 0xaad94c,
   system: 0x8b949e,
   gauge: {
     good: 0x3fb950,

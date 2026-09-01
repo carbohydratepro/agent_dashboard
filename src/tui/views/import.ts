@@ -142,7 +142,7 @@ function drawPreview(
   for (const item of preview.items) {
     if (item.t === 'user') {
       for (const line of wrapText(item.text, inner - 2)) {
-        lines.push({ text: `> ${line}`, color: theme.accent });
+        lines.push({ text: `> ${line}`, color: theme.userText });
       }
     } else if (item.t === 'assistant') {
       for (const line of wrapText(item.text, inner - 4)) {

@@ -201,7 +201,7 @@ export function layoutEntries(
       case 'user':
         for (const line of wrapText(entry.text, width - 4)) {
           out.push({
-            spans: [{ text: `> ${line}`, style: { fg: theme.accent, bold: true } }],
+            spans: [{ text: `> ${line}`, style: { fg: theme.userText, bold: true } }],
             indent: 0,
             boxed: false,
           });
@@ -364,7 +364,7 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
     if (raw === undefined) break;
     const prefix = i === 0 ? '> ' : '  ';
     textClipped(screen, 2, y + 1 + i, screen.width - 4, prefix + dropWidth(raw, offset), {
-      fg: theme.textBright,
+      fg: theme.userText,
       bg: theme.bg,
     });
   }
@@ -375,7 +375,7 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
     Math.min(4 + pos.column - offset, screen.width - 2),
     y + 1 + Math.min(pos.line, inputHeight - 3),
     '▏',
-    { fg: theme.accent, bg: theme.bg },
+    { fg: theme.userText, bg: theme.bg },
   );
 
   // キーバー

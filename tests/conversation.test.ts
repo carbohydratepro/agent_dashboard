@@ -12,10 +12,12 @@ import { MockDriver, successfulTurn, delegatingTurn } from '../src/core/drivers/
 import { SeqIdGen } from '../src/core/clock.ts';
 import {
   ConversationState,
+  drawConversation,
   layoutEntries,
   lineText,
   MAX_ENTRIES,
 } from '../src/tui/views/conversation.ts';
+import { Screen } from '../src/tui/screen.ts';
 import { DEFAULT_THEME } from '../src/tui/theme.ts';
 import { displayWidth } from '../src/tui/width.ts';
 
@@ -255,5 +257,71 @@ describe('画面としての会話', () => {
     assert.ok(h.view().length > 0);
     h.press('\x1b[6~', '\x1b[6~', '\x1b[6~', '\x1b[6~');
     assert.ok(h.view().includes('指示 4'), '最下部に戻る');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('自分の指示と回答を色で分ける', () => {
+  function layout(build: (c: ConversationState) => void) {
+    const conv = new ConversationState();
+    build(conv);
+    return layoutEntries(conv.entries, 60, DEFAULT_THEME, true);
+  }
+
+  test('自分の指示は黄緑、回答は本文色', () => {
+    const lines = layout((c) => {
+      c.pushUser('テストを走らせて');
+      c.applyEvent({ t: 'text', delta: '走らせました。' });
+    });
+
+    const mine = lines.find((l) => lineText(l).includes('テストを走らせて'));
+    const reply = lines.find((l) => lineText(l).includes('走らせました'));
+
+    assert.equal(mine?.spans[0]?.style.fg, DEFAULT_THEME.userText);
+    assert.notEqual(reply?.spans[0]?.style.fg, DEFAULT_THEME.userText);
+  });
+
+  test('折り返しても全部の行が黄緑のまま', () => {
+    const lines = layout((c) => c.pushUser('あ'.repeat(120)));
+    const mine = lines.filter((l) => lineText(l).includes('あ'));
+
+    assert.ok(mine.length > 1, '折り返っている');
+    for (const line of mine) {
+      for (const span of line.spans) {
+        assert.equal(span.style.fg, DEFAULT_THEME.userText);
+      }
+    }
+  });
+
+  test('回答のマークダウンは黄緑を使わない', () => {
+    // 見出しや強調に別の色を当てているので、そこと衝突していないか
+    const lines = layout((c) =>
+      c.applyEvent({ t: 'text', delta: '# 見出し\n\n**強調**と`コード`。\n\n- 箇条書き' }),
+    );
+    for (const line of lines) {
+      for (const span of line.spans) {
+        assert.notEqual(span.style.fg, DEFAULT_THEME.userText, lineText(line));
+      }
+    }
+  });
+
+  test('入力中の文字も黄緑で出る', () => {
+    const conv = new ConversationState();
+    conv.input.value = 'これから書く指示';
+    conv.input.cursor = conv.input.value.length;
+
+    const screen = new Screen(60, 16, 'none');
+    drawConversation(screen, {
+      session: { name: 'claude-1', state: 'idle', nextPrompt: '', pendingApprovals: [] } as never,
+      conversation: conv,
+      theme: DEFAULT_THEME,
+      now: 0,
+    });
+
+    const rows = screen.toStrings();
+    const y = rows.findIndex((r) => r.includes('これから書く指示'));
+    assert.ok(y >= 0, '入力欄に出ている');
+    assert.equal(screen.get(rows[y]!.indexOf('これ'), y).fg, DEFAULT_THEME.userText);
   });
 });
