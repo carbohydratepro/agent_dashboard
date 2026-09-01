@@ -103,7 +103,7 @@ CLI のデフォルトに任せ、設定で明示されたときだけ引数を�
 | TUI | **独自 ANSI ライタ**（ダブルバッファ＋差分フラッシュ） | 画面の主役が表グリッドで、React の差分計算が噛み合わない。依存ゼロを維持でき、全角幅の扱いも自前で正確にできる |
 | 色 | chalk (256色 / truecolor) | 端末の色能力を検出してフォールバック |
 | ネットワーク監視 | `os.networkInterfaces()` のポーリング | 追加依存なし（§10.2） |
-| 永続化 | JSON ファイル（`~/.virtual-office/`） | 依存を増やさない |
+| 永続化 | JSON ファイル（`~/.agent-dashboard/`） | 依存を増やさない |
 | テスト | **`node --test`（内蔵）** | Node 26 が TypeScript をネイティブ実行できるため、vitest を入れずに済む。core は実行時依存ゼロ |
 
 > **ツールチェーンの決定（フェーズ 1）**: Node 26 の型ストリッピングで `.ts` を直接実行し、テストは内蔵ランナーを使う。実行時依存はゼロ、開発依存は `typescript` と `@types/node` のみ。
@@ -595,10 +595,10 @@ codex exec resume --json <session-id> "<prompt>"
 
 ```bash
 git -C <requestedCwd> worktree add \
-  ~/.virtual-office/worktrees/<employee-id> -b vo/<codename>
+  ~/.agent-dashboard/worktrees/<employee-id> -b vo/<codename>
 ```
 
-- `actualCwd` = `~/.virtual-office/worktrees/<employee-id>`、`branch` = `vo/<codename>`
+- `actualCwd` = `~/.agent-dashboard/worktrees/<employee-id>`、`branch` = `vo/<codename>`
 - 両ドライバに同じ手が使える（`claude -w` に頼らず自前で切る）
 - スロットに `⑂ vo/CDX-01` バッジ
 
@@ -850,7 +850,7 @@ network_changed 検知（3秒安定後）
 
 | 層 | 持ち主 | 中身 |
 |---|---|---|
-| **ダッシュボード層** | `~/.virtual-office/` | 識別名・集計・スロット・下書き・worktree・承認待ち |
+| **ダッシュボード層** | `~/.agent-dashboard/` | 識別名・集計・スロット・下書き・worktree・承認待ち |
 | **会話層** | CLI 側のセッションストア | 会話履歴・ツール使用履歴・文脈そのもの |
 
 `agentSessionId` 一本で紐づく。この ID があれば `--resume` で会話が復活する。
@@ -860,7 +860,7 @@ network_changed 検知（3秒安定後）
 ### 14.2 ファイル構成
 
 ```
-~/.virtual-office/
+~/.agent-dashboard/
   config.json / office.json
   employees/<employee-id>.json
   sessions/<employee-id>/raw.jsonl, tasks.jsonl

@@ -43,7 +43,7 @@ afterEach(() => {
 });
 
 function manager(opts: { autoWorktree?: boolean } = {}) {
-  return new WorkspaceManager({ root: join(root, '.virtual-office'), ...opts });
+  return new WorkspaceManager({ root: join(root, '.agent-dashboard'), ...opts });
 }
 
 function occupied(entries: Array<[string, string[]]>): Map<string, string[]> {
@@ -280,7 +280,7 @@ describe('verify — 起動時の実在確認（SPEC §14.3）', () => {
     const wm = manager();
     const ws: Workspace = {
       requestedCwd: repo,
-      actualCwd: join(root, '.virtual-office', 'worktrees', 'gone'),
+      actualCwd: join(root, '.agent-dashboard', 'worktrees', 'gone'),
       isolation: 'worktree',
       branch: 'vo/claude-2',
       sandbox: null,

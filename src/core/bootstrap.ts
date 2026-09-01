@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
 import { Persistence } from './persistence.ts';
-import { defaultConfig } from './config.ts';
+import { defaultConfig, migrateLegacyRoot } from './config.ts';
 import type { DashboardConfig } from './config.ts';
 import { StateStore, createDashboard } from './store.ts';
 import { SessionManager } from './session-manager.ts';
@@ -57,6 +57,12 @@ export interface BootstrapOptions {
   drivers?: Partial<Record<AgentKind, AgentDriver>>;
   /** テスト用にバージョン確認を飛ばす */
   skipVersionCheck?: boolean;
+  /**
+   * 旧名の保存先。渡されたときだけ引っ越しを試みる。
+   * 既定値にせず呼び出し側に持たせるのは、テストが一時ディレクトリを root にするため。
+   * 既定にすると利用者の本物のディレクトリを一時ディレクトリへ移してしまう。
+   */
+  legacyRoot?: string;
   now?: () => number;
 }
 
@@ -75,6 +81,12 @@ function runVersion(bin: string): Promise<string | null> {
 export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult> {
   const warnings: string[] = [];
   const now = opts.now ?? (() => Date.now());
+
+  // 0. 旧名からの引っ越し。読み書きを始める前に済ませる
+  if (opts.legacyRoot !== undefined) {
+    const note = migrateLegacyRoot(opts.root, opts.legacyRoot);
+    if (note !== null) warnings.push(note);
+  }
 
   // 1. 設定と会社情報
   const persistence = new Persistence(opts.root);

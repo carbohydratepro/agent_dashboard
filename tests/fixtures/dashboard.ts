@@ -129,6 +129,6 @@ function decorate(session: Session, d: Decoration): void {
   if (d.worktree) {
     session.workspace.isolation = 'worktree';
     session.workspace.branch = d.worktree;
-    session.workspace.actualCwd = `/home/dev/.virtual-office/worktrees/${session.id}`;
+    session.workspace.actualCwd = `/home/dev/.agent-dashboard/worktrees/${session.id}`;
   }
 }

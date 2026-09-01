@@ -5,7 +5,7 @@
  */
 
 import { bootstrap } from './core/bootstrap.ts';
-import { defaultRoot } from './core/config.ts';
+import { defaultRoot, legacyDefaultRoot } from './core/config.ts';
 import { NodeTerminal } from './tui/terminal.ts';
 import { App } from './tui/app.ts';
 import { DEFAULT_THEME } from './tui/theme.ts';
@@ -39,7 +39,11 @@ export function parseArgs(argv: string[]): Options {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const opts = parseArgs(argv);
-  const boot = await bootstrap({ root: opts.home, cwd: opts.cwd });
+  const boot = await bootstrap({
+    root: opts.home,
+    cwd: opts.cwd,
+    legacyRoot: legacyDefaultRoot(),
+  });
 
   boot.monitor.start();
   boot.recovery.attach();

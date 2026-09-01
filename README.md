@@ -23,7 +23,7 @@
 ## 動かす
 
 ```bash
-npm start                    # ~/.virtual-office を使って起動
+npm start                    # ~/.agent-dashboard を使って起動
 npm start -- --cwd ~/myrepo  # 既定の作業ディレクトリを指定
 npm start -- --ascii         # ブロック文字を使わない描画
 npm start -- --no-anim       # 動きを止める
@@ -180,7 +180,7 @@ claude がサブエージェントを使うと、詳細に種別・使用ツー�
 ## データの置き場所
 
 ```
-~/.virtual-office/
+~/.agent-dashboard/
   config.json            設定
   dashboard.json         画面の状態
   history.json           月次の集計
@@ -190,6 +190,15 @@ claude がサブエージェントを使うと、詳細に種別・使用ツー�
     tasks.jsonl          タスク履歴
   worktrees/<id>/        git worktree
   locks/                 実行ロック
+```
+
+置き場所は `AGENT_DASHBOARD_HOME` で変えられる（旧名の `VO_HOME` も受け付ける）。
+
+かつては `~/.virtual-office` だった。旧名のディレクトリが残っていれば起動時に一度だけ
+`~/.agent-dashboard` へ移す。ただし移すのは新しい方がまだ無いときだけで、両方あるときは
+何もせず起動時に知らせる（旧版のダッシュボードが動いたまま終了して旧名へ書き戻した場合に、
+新しい状態を古いもので潰さないため）。
+
 ```
 
 同じディレクトリに 2 つ目を追加すると、git リポジトリなら自動で worktree を

@@ -41,7 +41,7 @@ afterEach(() => {
 });
 
 function harness() {
-  const voRoot = join(root, '.virtual-office');
+  const voRoot = join(root, '.agent-dashboard');
   const store = new StateStore(createDashboard());
   const driver = new MockDriver({ kind: 'claude' });
   driver.setScenario(() => successfulTurn({ files: ['calc.js'] }));

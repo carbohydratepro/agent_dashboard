@@ -74,7 +74,7 @@ SPEC §10 の実機確認。自動テストで潰せる範囲と、人が手を�
 
 ## 感度の調整
 
-過剰検知・検知漏れがあれば `~/.virtual-office/config.json` の `network` を触る。
+過剰検知・検知漏れがあれば `~/.agent-dashboard/config.json` の `network` を触る。
 
 ```jsonc
 "network": {

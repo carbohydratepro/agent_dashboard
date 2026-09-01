@@ -8,7 +8,7 @@ import { join } from 'node:path';
 
 import { Persistence, writeAtomic, RAW_ROTATE_BYTES } from '../src/core/persistence.ts';
 import { bootstrap } from '../src/core/bootstrap.ts';
-import { defaultConfig, mergeConfig } from '../src/core/config.ts';
+import { defaultConfig, defaultRoot, mergeConfig, migrateLegacyRoot } from '../src/core/config.ts';
 import { SessionManager } from '../src/core/session-manager.ts';
 import { StateStore, createDashboard } from '../src/core/store.ts';
 import { attachAutosave } from '../src/core/autosave.ts';
@@ -372,5 +372,84 @@ describe('会話の続き', () => {
     const restored = b.store.active()[0]!;
     await b.manager.dispatch(restored.id, 'はじめまして');
     assert.equal(b.claude.calls[0]!.mode, 'start');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('旧名の保存先からの引っ越し', () => {
+  let home = '';
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'vo-migrate-'));
+  });
+
+  afterEach(() => {
+    if (home && existsSync(home)) rmSync(home, { recursive: true, force: true });
+  });
+
+  const oldRoot = (): string => join(home, '.virtual-office');
+  const newRoot = (): string => join(home, '.agent-dashboard');
+
+  test('新しい方が無ければ中身ごと移す', () => {
+    mkdirSync(join(oldRoot(), 'sessions-meta'), { recursive: true });
+    writeFileSync(join(oldRoot(), 'dashboard.json'), '{"title":"元の状態"}');
+
+    const note = migrateLegacyRoot(newRoot(), oldRoot());
+
+    assert.match(note ?? '', /移しました/);
+    assert.equal(existsSync(oldRoot()), false);
+    assert.equal(
+      readFileSync(join(newRoot(), 'dashboard.json'), 'utf8'),
+      '{"title":"元の状態"}',
+    );
+    assert.equal(existsSync(join(newRoot(), 'sessions-meta')), true);
+  });
+
+  test('両方あるときは触らない', () => {
+    // 引っ越し後に旧版のダッシュボードが終了し、旧名を作り直した状況。
+    // ここで上書きすると新しい状態が古いもので潰れる。
+    mkdirSync(oldRoot(), { recursive: true });
+    writeFileSync(join(oldRoot(), 'dashboard.json'), '{"title":"古い"}');
+    mkdirSync(newRoot(), { recursive: true });
+    writeFileSync(join(newRoot(), 'dashboard.json'), '{"title":"新しい"}');
+
+    const note = migrateLegacyRoot(newRoot(), oldRoot());
+
+    assert.match(note ?? '', /残っています/);
+    assert.equal(readFileSync(join(newRoot(), 'dashboard.json'), 'utf8'), '{"title":"新しい"}');
+    assert.equal(existsSync(oldRoot()), true, '勝手に消さない');
+  });
+
+  test('旧名が無ければ黙って何もしない', () => {
+    assert.equal(migrateLegacyRoot(newRoot(), oldRoot()), null);
+    assert.equal(existsSync(newRoot()), false);
+  });
+
+  test('引っ越しは一度きり', () => {
+    mkdirSync(oldRoot(), { recursive: true });
+    assert.match(migrateLegacyRoot(newRoot(), oldRoot()) ?? '', /移しました/);
+    assert.equal(migrateLegacyRoot(newRoot(), oldRoot()), null);
+  });
+
+  test('既定の保存先は新しい名前', () => {
+    const saved = { ad: process.env.AGENT_DASHBOARD_HOME, vo: process.env.VO_HOME };
+    delete process.env.AGENT_DASHBOARD_HOME;
+    delete process.env.VO_HOME;
+    try {
+      assert.equal(defaultRoot().endsWith('/.agent-dashboard'), true, defaultRoot());
+
+      // 旧い環境変数を設定済みの人を弾かない
+      process.env.VO_HOME = '/tmp/vo-old';
+      assert.equal(defaultRoot(), '/tmp/vo-old');
+
+      process.env.AGENT_DASHBOARD_HOME = '/tmp/ad-new';
+      assert.equal(defaultRoot(), '/tmp/ad-new', '新しい方が優先される');
+    } finally {
+      if (saved.ad === undefined) delete process.env.AGENT_DASHBOARD_HOME;
+      else process.env.AGENT_DASHBOARD_HOME = saved.ad;
+      if (saved.vo === undefined) delete process.env.VO_HOME;
+      else process.env.VO_HOME = saved.vo;
+    }
   });
 });
