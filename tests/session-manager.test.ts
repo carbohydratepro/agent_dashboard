@@ -14,6 +14,7 @@ import {
 } from '../src/core/drivers/mock.ts';
 import type { Scenario } from '../src/core/drivers/mock.ts';
 import type { ManagerConfig } from '../src/core/session-manager.ts';
+import type { Session } from '../src/core/types.ts';
 
 interface Harness {
   manager: SessionManager;
@@ -523,5 +524,68 @@ describe('レート制限（SPEC §13.4）', () => {
 
     assert.equal(h.store.dashboard.rateLimit?.rateLimitType, 'five_hour');
     assert.equal(h.store.dashboard.rateLimit?.resetsAt, 1_786_566_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('同じ CLI セッションを 2 つが持つのを防ぐ', () => {
+  function fake(over: Partial<Session>): Session {
+    return {
+      id: over.name ?? 'x',
+      name: 'x',
+      archived: false,
+      agentSessionId: null,
+      lastError: null,
+      stats: { tasksCompleted: 0 },
+      ...over,
+    } as unknown as Session;
+  }
+
+  test('アーカイブ側の紐付けを外す', () => {
+    // codex は 1 会話に書き手 1 人しか許さない。両方残すと
+    // 「already has an active writer」で終了コード 1 になる。
+    const live = fake({ name: 'codex-2', agentSessionId: 'thread-1' });
+    const old = fake({ name: 'codex-1', agentSessionId: 'thread-1', archived: true });
+
+    const notes = SessionManager.resolveDuplicateAgentSessions([old, live]);
+
+    assert.equal(live.agentSessionId, 'thread-1', '一覧にいる方を残す');
+    assert.equal(old.agentSessionId, null);
+    assert.equal(notes.length, 1);
+    assert.match(notes[0]!, /codex-1.*codex-2|codex-2.*codex-1/);
+  });
+
+  test('どちらも一覧にいるならやり取りが多い方を残す', () => {
+    const a = fake({ name: 'a', agentSessionId: 't', stats: { tasksCompleted: 2 } as never });
+    const b = fake({ name: 'b', agentSessionId: 't', stats: { tasksCompleted: 9 } as never });
+
+    SessionManager.resolveDuplicateAgentSessions([a, b]);
+
+    assert.equal(b.agentSessionId, 't');
+    assert.equal(a.agentSessionId, null);
+  });
+
+  test('前の失敗も一緒に消す', () => {
+    const live = fake({ name: 'live', agentSessionId: 't' });
+    const old = fake({
+      name: 'old',
+      agentSessionId: 't',
+      archived: true,
+      lastError: '終了コード 1 で終了しました',
+    });
+
+    SessionManager.resolveDuplicateAgentSessions([old, live]);
+    assert.equal(old.lastError, null, '紐付けを外したら、その失敗はもう関係ない');
+  });
+
+  test('重複していなければ何もしない', () => {
+    const a = fake({ name: 'a', agentSessionId: 't1' });
+    const b = fake({ name: 'b', agentSessionId: 't2' });
+    const c = fake({ name: 'c', agentSessionId: null });
+
+    assert.deepEqual(SessionManager.resolveDuplicateAgentSessions([a, b, c]), []);
+    assert.equal(a.agentSessionId, 't1');
+    assert.equal(b.agentSessionId, 't2');
   });
 });

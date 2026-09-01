@@ -5,13 +5,19 @@ import type { Rect } from '../layout.ts';
 import type { Dashboard } from '../../core/types.ts';
 import { BUSY_STATES } from '../../core/types.ts';
 import type { Theme } from '../theme.ts';
+import { gaugeColor } from '../theme.ts';
+import type { ResourceSample } from '../../core/resources.ts';
+import { formatBytes } from '../../core/resources.ts';
 import { fillRect, textClipped, textRight } from '../paint.ts';
+import { displayWidth } from '../width.ts';
 
 export interface HeaderState {
   dashboard: Dashboard;
   theme: Theme;
   now: number;
   banner?: { text: string; color: number } | null;
+  /** このマシンの負荷。取れていなければ出さない。 */
+  resources?: ResourceSample | null;
 }
 
 function clockText(now: number): string {
@@ -42,10 +48,23 @@ export function drawHeader(screen: Screen, rect: Rect, s: HeaderState): void {
   if (blocked > 0) parts.push(`承認待ち ${blocked}`);
   parts.push(clockText(s.now));
 
-  textRight(screen, rect.x, rect.y, rect.w - 1, parts.join('   '), {
+  const right = parts.join('   ');
+  textRight(screen, rect.x, rect.y, rect.w - 1, right, {
     fg: theme.textDim,
     bg: theme.bg,
   });
+
+  // 負荷はその左に、値に応じた色で出す
+  if (s.resources) {
+    const r = s.resources;
+    const cpu = r.cpuRatio === null ? '--' : `${Math.round(r.cpuRatio * 100)}%`;
+    const text = `MEM ${Math.round(r.memoryRatio * 100)}%  CPU ${cpu}  本体 ${formatBytes(r.rss)}`;
+    const worst = Math.max(r.memoryRatio, r.cpuRatio ?? 0);
+    textRight(screen, rect.x, rect.y, rect.w - 1 - displayWidth(right) - 3, text, {
+      fg: worst >= 0.75 ? gaugeColor(theme, worst) : theme.textDim,
+      bg: theme.bg,
+    });
+  }
 }
 
 export interface KeyHint {
@@ -67,6 +86,7 @@ export const MAIN_HINTS: KeyHint[] = [
   { key: '↑↓', label: '選択' },
   { key: 'Enter', label: '開く' },
   { key: 'n', label: '追加' },
+  { key: 'X', label: '解放' },
   { key: 'e', label: '下書き' },
   { key: 'L', label: 'ログ' },
   { key: 's', label: '統計' },

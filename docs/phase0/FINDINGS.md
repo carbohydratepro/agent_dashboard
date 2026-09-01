@@ -399,3 +399,32 @@ Current week (all models): 22% used · resets Aug 23, 11:59pm (Asia/Tokyo)
 
 4. **権限拒否からの再実行**（§3.2 の稟議フロー）
    `--allowedTools` を付けた `--resume` で実際に通るかは未検証。フェーズ 2 で確認する。
+
+## 8. codex のスレッドは書き手 1 人まで（2026-09-01 追記）
+
+同じスレッド ID に対して 2 つ目の `codex exec resume` を走らせると、終了コード 1 で落ちる。
+
+```
+ERROR codex_core::session::session: failed to initialize thread persistence:
+  thread-store conflict: thread <id> already has an active writer
+Error: thread/resume: thread/resume failed: thread <id> already has an active writer (code -32600)
+```
+
+同時実行に限らず、ダッシュボード側の記録が 2 つ同じ `agentSessionId` を持っているだけで、
+片方は以後ずっと会話できなくなる。取り込み時に新しい記録を作らず、
+アーカイブ済みの記録を戻すようにしたのはこのため（SessionManager.resolveDuplicateAgentSessions）。
+
+### rollout ファイルはスレッドと 1 対 1 ではない
+
+`codex exec resume` のたびに新しい `rollout-*.jsonl` ができるが、`session_meta.session_id` は同じ。
+そのため会話一覧はファイル単位ではなくスレッド ID 単位でまとめる必要がある
+（実データで 36 ファイル → 11 スレッド）。
+
+再開時のファイルには、先頭のユーザー発話として次のような前置きが入る。見出しには使えない。
+
+- `The following is the Codex agent history …`
+- `<user_instructions>` / `<environment_context>`
+- `# AGENTS.md instructions for <cwd>`
+
+`session_meta` 行は `base_instructions` を丸ごと含むため 18KB 前後ある。
+先頭だけ読む実装では、読む量をこれより十分大きく取らないと本文に届かない（現在 128KB）。

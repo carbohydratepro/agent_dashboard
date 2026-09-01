@@ -25,6 +25,12 @@ import { systemClock, systemIdGen } from './clock.ts';
 import { StateStore } from './store.ts';
 import { createStats } from './stats.ts';
 import { colorForSlot, nextName } from './naming.ts';
+
+/**
+ * 1 タスクぶんに残す出来事の数。
+ * 画面に出すのは末尾の数行だけなので、これ以上持っていても使い道が無い。
+ */
+export const MAX_TASK_EVENTS = 500;
 import { isRateLimited } from './analytics.ts';
 import type { CarriedExperience } from './sessions.ts';
 import type { LockHandle, LockManager } from './locks.ts';
@@ -220,7 +226,48 @@ export class SessionManager {
   }
 
   /** 保存されていたセッションを一覧に戻す（SPEC §14.3 手順 2） */
-  loadSessions(sessions: Session[]): void {
+  /**
+   * 同じ CLI セッションを 2 つの記録が持っていたら、片方を切り離す。
+   *
+   * claude も codex も 1 つの会話に書き手は 1 人しか許さない。codex は
+   * 「already has an active writer」で終了コード 1 になり、以後ずっと会話できない。
+   * 生きている方を残し、アーカイブ済みの方から紐付けを外す。
+   *
+   * 戻り値は利用者に見せる知らせ。
+   */
+  static resolveDuplicateAgentSessions(sessions: Session[]): string[] {
+    const byAgentId = new Map<string, Session[]>();
+    for (const session of sessions) {
+      const id = session.agentSessionId;
+      if (id === null) continue;
+      const list = byAgentId.get(id) ?? [];
+      list.push(session);
+      byAgentId.set(id, list);
+    }
+
+    const notes: string[] = [];
+    for (const [agentId, list] of byAgentId) {
+      if (list.length < 2) continue;
+      // 一覧にいる方を優先し、同条件ならタスク番号が進んでいる方を残す
+      const sorted = [...list].sort((a, b) => {
+        if (a.archived !== b.archived) return a.archived ? 1 : -1;
+        return (b.stats.tasksCompleted ?? 0) - (a.stats.tasksCompleted ?? 0);
+      });
+      const keep = sorted[0]!;
+      for (const drop of sorted.slice(1)) {
+        drop.agentSessionId = null;
+        drop.lastError = null;
+        notes.push(
+          `${drop.name} と ${keep.name} が同じ会話を指していました。${keep.name} に残し、${drop.name} の紐付けを外しました。`,
+        );
+      }
+      void agentId;
+    }
+    return notes;
+  }
+
+  loadSessions(sessions: Session[]): string[] {
+    const notes = SessionManager.resolveDuplicateAgentSessions(sessions);
     for (const session of sessions) {
       if (this.store.find(session.id)) continue;
       this.store.dashboard.sessions.push(session);
@@ -231,6 +278,7 @@ export class SessionManager {
       const n = Number(session.currentTask?.id.replace('task-', '') ?? 0);
       if (Number.isFinite(n)) this.#taskSeq = Math.max(this.#taskSeq, n);
     }
+    return notes;
   }
 
   /**
@@ -486,6 +534,10 @@ export class SessionManager {
 
       for await (const event of stream) {
         task.events.push(event);
+        // 長いターンでは際限なく増える。画面は末尾しか使わないので古いものは捨てる。
+        if (task.events.length > MAX_TASK_EVENTS) {
+          task.events.splice(0, task.events.length - MAX_TASK_EVENTS);
+        }
         // 先に状態へ反映してから通知する。購読側が古い状態を見ないように。
         this.#applyAgentEvent(session, task, event, counters);
         this.store.emit({ t: 'agent_event', sessionId, event });

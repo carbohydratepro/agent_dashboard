@@ -170,7 +170,7 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
       if (session.nextPrompt.trim() === '') session.nextPrompt = unfinishedPrompt;
     }
   }
-  manager.loadSessions(loaded.map((l) => l.session));
+  warnings.push(...manager.loadSessions(loaded.map((l) => l.session)));
 
   // 7. ネットワーク監視
   const monitor = new NetworkMonitor({

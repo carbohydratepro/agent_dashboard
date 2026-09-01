@@ -7,6 +7,7 @@ import { Screen } from './screen.ts';
 import { computeLayout, tooSmall, MIN_HEIGHT, MIN_WIDTH } from './layout.ts';
 import type { AgentKind, Dashboard, Session } from '../core/types.ts';
 import type { UsageSnapshot } from '../core/usage.ts';
+import type { ResourceSample } from '../core/resources.ts';
 import type { Theme } from './theme.ts';
 import { DEFAULT_THEME } from './theme.ts';
 import { drawTable, tableRows } from './views/table.ts';
@@ -28,6 +29,7 @@ export interface MainScreenState {
   usage?: Partial<Record<AgentKind, UsageSnapshot | null>>;
   theme?: Theme;
   banner?: { text: string; color: number } | null;
+  resources?: ResourceSample | null;
 }
 
 /** 選択中の行にいるセッション。空きなら null。 */
@@ -68,6 +70,7 @@ export function drawMainScreen(screen: Screen, s: MainScreenState): void {
     theme,
     now: s.now,
     banner: s.banner ?? null,
+    resources: s.resources ?? null,
   });
   drawUsage(screen, layout.usage, {
     theme,

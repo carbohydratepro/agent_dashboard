@@ -6,6 +6,7 @@
 import type { Screen } from '../screen.ts';
 import type { Rect } from '../layout.ts';
 import type { Dashboard, Session } from '../../core/types.ts';
+import { BUSY_STATES } from '../../core/types.ts';
 import type { Theme } from '../theme.ts';
 import { gaugeColor, sessionColor, STATE_LABEL } from '../theme.ts';
 import { activityMark } from '../animation.ts';
@@ -32,7 +33,7 @@ const COLUMNS: Column[] = [
   { key: 'cmds', header: '実行', width: 4, align: 'right' },
   { key: 'tokens', header: 'トークン', width: 8, align: 'right' },
   { key: 'flags', header: '', width: 4 },
-  { key: 'cwd', header: '作業ディレクトリ', width: 0 },
+  { key: 'activity', header: 'いま何をしているか', width: 0 },
 ];
 
 const GAP = 1;
@@ -62,6 +63,30 @@ export function tableRows(dashboard: Dashboard): Array<Session | null> {
   const rows: Array<Session | null> = [];
   for (let i = 0; i < dashboard.slotCount; i += 1) rows.push(bySlot.get(i) ?? null);
   return rows;
+}
+
+/**
+ * その行に出す「いま何をしているか」。
+ *
+ * 動いている間は最後に始まったツールを出す。止まっているときに出すものが
+ * 無いので、代わりに作業ディレクトリを出す（列を 2 つに割るには幅が足りない）。
+ */
+export function activityText(session: Session): { text: string; busy: boolean } {
+  const task = session.currentTask;
+  if (task && BUSY_STATES.has(session.state)) {
+    for (let i = task.events.length - 1; i >= 0; i -= 1) {
+      const ev = task.events[i]!;
+      if (ev.t === 'tool_start') {
+        return { text: ev.detail ? `${ev.name}  ${ev.detail}` : ev.name, busy: true };
+      }
+      if (ev.t === 'subagent_start') {
+        return { text: `Agent (${ev.agentType})  ${ev.description}`, busy: true };
+      }
+    }
+    // ツールを呼ぶ前。何を頼まれたかを出しておく。
+    if (task.prompt !== '') return { text: task.prompt, busy: true };
+  }
+  return { text: session.workspace.requestedCwd, busy: false };
 }
 
 /**
@@ -102,7 +127,7 @@ export function drawTable(screen: Screen, rect: Rect, s: TableViewState): void {
   fillRect(screen, rect.x, rect.y, rect.w, rect.h, theme.bg);
 
   const cwdW = cwdWidth(rect.w);
-  const widths = COLUMNS.map((c) => (c.key === 'cwd' ? cwdW : c.width));
+  const widths = COLUMNS.map((c) => (c.key === 'activity' ? cwdW : c.width));
 
   // 見出し
   let x = rect.x + 1;
@@ -191,8 +216,15 @@ function drawRow(
   cell(7, String(session.stats.commandsRun), theme.textDim);
   cell(8, formatTokens(session.stats.totalTokensIn + session.stats.totalTokensOut), theme.textDim);
   cell(9, flagsFor(session), theme.accent);
-  // パスは末尾のほうが情報量が多いので、長ければ先頭を省く
-  cell(10, tailPath(session.workspace.requestedCwd, widths[10]!), theme.system);
+
+  // 動いていれば作業内容、止まっていれば作業ディレクトリ。
+  // パスは末尾のほうが情報量が多いので、長ければ先頭を省く。
+  const activity = activityText(session);
+  cell(
+    10,
+    activity.busy ? activity.text : tailPath(activity.text, widths[10]!),
+    activity.busy ? theme.text : theme.system,
+  );
 }
 
 function drawEmptyRow(

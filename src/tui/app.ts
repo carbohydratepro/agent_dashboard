@@ -12,6 +12,8 @@ import { isPrintable } from './input.ts';
 import type { Theme } from './theme.ts';
 import { DEFAULT_THEME, STATE_LABEL_JA } from './theme.ts';
 import { drawMainScreen, sessionAtRow } from './render.ts';
+import { ResourceMonitor } from '../core/resources.ts';
+import type { ResourceSample } from '../core/resources.ts';
 import { drawPanel, panelMetrics } from './views/panel.ts';
 import type { PanelLine } from './views/panel.ts';
 import { helpLines } from './views/help.ts';
@@ -156,6 +158,9 @@ export class App {
   #importSession: ImportState | null = null;
   #approvalIndex = 0;
   #conversations = new Map<string, ConversationState>();
+  #resourceMonitor = new ResourceMonitor();
+  #resources: ResourceSample | null = null;
+  #resourcesAt = 0;
   #rejectInput: TextInput | null = null;
   /** スラッシュコマンドの候補。入力に応じて作り直す。 */
   #completion: CompletionState | null = null;
@@ -234,6 +239,13 @@ export class App {
 
   /** アニメーションの 1 コマ。タイマーから呼ばれる。 */
   tick(): void {
+    // 負荷は 2 秒に 1 回でいい。毎フレーム取ると自分の CPU を食う。
+    const now = this.#now();
+    if (this.screenId === 'main' && now - this.#resourcesAt >= 2_000) {
+      this.#resourcesAt = now;
+      this.#resources = this.#resourceMonitor.sample();
+      this.#dirty = true;
+    }
     if (this.banner && this.#now() > this.banner.until) {
       this.banner = null;
       this.#dirty = true;
@@ -281,6 +293,7 @@ export class App {
           usage: this.#usageSnapshots(),
           theme,
           banner: this.banner,
+          resources: this.#resources,
         });
         return;
 
@@ -1254,6 +1267,26 @@ export class App {
     // 一覧に出すぶんより多く読み直す。画面に出す履歴なので長めに。
     const transcript = readSessionTranscript(source, { maxItems: 400 });
 
+    // 前に担当していたアーカイブ済みが居るなら、新しく作らずそれを戻す。
+    // 2 つの記録が同じ会話を持つと、CLI 側が「書き手が既にいる」と言って
+    // 終了コード 1 になり、どちらからも会話できなくなる。
+    const former = this.store.dashboard.sessions.find(
+      (e) => e.archived && e.agentSessionId === source.sessionId,
+    );
+    if (former) {
+      try {
+        const back = this.manager.unarchiveSession(former.id);
+        this.selectedRow = back.slot;
+        this.#importSession = null;
+        this.#hire = null;
+        this.#openScreen('conversation');
+        this.#notify(`${back.name} を一覧に戻しました`, this.theme.gauge.good);
+      } catch (err) {
+        this.#notify(err instanceof Error ? err.message : String(err), this.theme.gauge.critical);
+      }
+      return;
+    }
+
     try {
       const session = this.manager.createSession({
         kind: source.kind,
@@ -1299,7 +1332,9 @@ export class App {
       onYes: () => {
         try {
           this.manager.archiveSession(session.id);
-          this.#notify(`${session.name} がアーカイブしました`);
+          // 会話は開いたときに履歴から組み直せる。抱えたままにしない。
+          this.#conversations.delete(session.id);
+          this.#notify(`${session.name} をアーカイブしました`);
         } catch (err) {
           this.#notify(String(err instanceof Error ? err.message : err), this.theme.gauge.critical);
         }

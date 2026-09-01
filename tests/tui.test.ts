@@ -10,7 +10,8 @@ import { computeLayout, tooSmall, MIN_HEIGHT, MIN_WIDTH } from '../src/tui/layou
 import { drawGauge, wrapText } from '../src/tui/paint.ts';
 import { drawMainScreen } from '../src/tui/render.ts';
 import { formatDuration, formatTokens } from '../src/tui/views/format.ts';
-import { flagsFor, tableRows, tableScrollOffset, tailPath } from '../src/tui/views/table.ts';
+import { activityText, flagsFor, tableRows, tableScrollOffset, tailPath } from '../src/tui/views/table.ts';
+import { ResourceMonitor, formatBytes } from '../src/core/resources.ts';
 import { activityMark, isBusy, thinkingLevel } from '../src/tui/animation.ts';
 import { recentActivity } from '../src/tui/views/detail.ts';
 import { sampleDashboard, FIXTURE_NOW } from './fixtures/dashboard.ts';
@@ -372,5 +373,149 @@ describe('スロットが画面に入りきらないとき', () => {
     const row = headerRow(draw(6, 0, 30));
     assert.equal(row.includes('↑'), false, row);
     assert.equal(row.includes('↓'), false, row);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('マシンの負荷', () => {
+  test('CPU は 2 回目から出る', () => {
+    const m = new ResourceMonitor(() => 123 * 1024 * 1024);
+
+    const first = m.sample();
+    assert.equal(first.cpuRatio, null, '1 回目は差が取れない');
+    assert.equal(first.rss, 123 * 1024 * 1024);
+    assert.ok(first.memoryRatio > 0 && first.memoryRatio <= 1);
+
+    const second = m.sample();
+    if (second.cpuRatio !== null) {
+      assert.ok(second.cpuRatio >= 0 && second.cpuRatio <= 1, String(second.cpuRatio));
+    }
+  });
+
+  test('バイト数を短く書く', () => {
+    assert.equal(formatBytes(159 * 1024 * 1024), '159M');
+    assert.equal(formatBytes(2.5 * 1024 * 1024 * 1024), '2.5G');
+    assert.equal(formatBytes(0), '0M');
+  });
+
+  test('ヘッダに出る', () => {
+    const screen = new Screen(120, 30, 'none');
+    drawMainScreen(screen, {
+      dashboard: sampleDashboard(),
+      selected: 0,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+      resources: { rss: 159 * 1024 * 1024, memoryRatio: 0.42, cpuRatio: 0.07 },
+    });
+    const header = screen.toStrings()[0] ?? '';
+    assert.match(header, /MEM 42%/);
+    assert.match(header, /CPU 7%/);
+    assert.match(header, /本体 159M/);
+  });
+
+  test('負荷が渡されなければ何も出さない', () => {
+    const screen = new Screen(120, 30, 'none');
+    drawMainScreen(screen, {
+      dashboard: sampleDashboard(),
+      selected: 0,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+    });
+    assert.equal((screen.toStrings()[0] ?? '').includes('MEM'), false);
+  });
+});
+
+describe('いま何をしているか', () => {
+  test('動いていれば実行中のツールを出す', () => {
+    const dashboard = sampleDashboard();
+    const session = dashboard.sessions[0]!;
+    session.state = 'working';
+    session.currentTask = {
+      id: 't1',
+      sessionId: session.id,
+      prompt: 'テストを直して',
+      startedAt: FIXTURE_NOW,
+      endedAt: null,
+      status: 'running',
+      events: [
+        { t: 'tool_start', name: 'Read', detail: 'a.ts', toolUseId: '1' },
+        { t: 'tool_start', name: 'Bash', detail: 'npm test', toolUseId: '2' },
+      ],
+      summary: null,
+      recoveredFrom: null,
+    };
+
+    const a = activityText(session);
+    assert.equal(a.busy, true);
+    assert.match(a.text, /Bash.*npm test/, '最後に始まったものを出す');
+  });
+
+  test('ツールを呼ぶ前は指示そのものを出す', () => {
+    const dashboard = sampleDashboard();
+    const session = dashboard.sessions[0]!;
+    session.state = 'thinking';
+    session.currentTask = {
+      id: 't1',
+      sessionId: session.id,
+      prompt: 'テストを直して',
+      startedAt: FIXTURE_NOW,
+      endedAt: null,
+      status: 'running',
+      events: [],
+      summary: null,
+      recoveredFrom: null,
+    };
+
+    assert.deepEqual(activityText(session), { text: 'テストを直して', busy: true });
+  });
+
+  test('一覧の行に実際に出る', () => {
+    // 列の幅計算から外れていると、関数が正しくても画面には出ない
+    const dashboard = sampleDashboard();
+    const session = dashboard.sessions[0]!;
+    session.state = 'working';
+    session.currentTask = {
+      id: 't1',
+      sessionId: session.id,
+      prompt: 'テストを直して',
+      startedAt: FIXTURE_NOW,
+      endedAt: null,
+      status: 'running',
+      events: [{ t: 'tool_start', name: 'Bash', detail: 'npm run check', toolUseId: '1' }],
+      summary: null,
+      recoveredFrom: null,
+    };
+
+    const screen = new Screen(140, 30, 'none');
+    drawMainScreen(screen, {
+      dashboard,
+      selected: 0,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+    });
+    const rows = screen.toStrings();
+
+    assert.ok(
+      rows.some((r) => r.includes('npm run check')),
+      '実行中のコマンドが行に出ている',
+    );
+    assert.ok(rows[2]?.includes('いま何をしているか'), '見出しが出ている');
+  });
+
+  test('止まっていれば作業ディレクトリを出す', () => {
+    const dashboard = sampleDashboard();
+    const session = dashboard.sessions[0]!;
+    session.state = 'idle';
+
+    const a = activityText(session);
+    assert.equal(a.busy, false);
+    assert.equal(a.text, session.workspace.requestedCwd);
   });
 });

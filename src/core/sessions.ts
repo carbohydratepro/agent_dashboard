@@ -104,8 +104,18 @@ function looksLikeInjectedInstruction(text: string): boolean {
     head.startsWith('<') ||
     head.includes('AGENTS.md instructions') ||
     head.includes('<INSTRUCTIONS>') ||
-    head.includes('system-reminder')
+    head.includes('system-reminder') ||
+    // codex は resume のたびに、これまでの履歴を user 発話として差し込む
+    head.startsWith('The following is the Codex agent history') ||
+    head.startsWith('<user_instructions>') ||
+    head.startsWith('<environment_context>')
   );
+}
+
+/** 見出しに使えない、機械向けの出力かどうか */
+function looksLikeMachineOutput(text: string): boolean {
+  const head = text.trimStart();
+  return head.startsWith('{') || head.startsWith('[') || head.startsWith('<');
 }
 
 /** 長い発話を 1 行の見出しにする */
@@ -348,6 +358,7 @@ export function parseCodexSession(
   let sessionId = '';
   let cwd = '';
   let firstUser = '';
+  let firstAssistant = '';
 
   for (const record of jsonLines(head)) {
     const payload = record.payload as Record<string, unknown> | undefined;
@@ -361,14 +372,28 @@ export function parseCodexSession(
     if (firstUser === '' && payload.type === 'user_message' && typeof payload.message === 'string') {
       if (!looksLikeInjectedInstruction(payload.message)) firstUser = payload.message;
     }
+    // 発話が注入物だけのことがある（resume した直後のファイルなど）。
+    // その場合は本人の返事を見出しに使う。無題より手がかりになる。
+    if (
+      firstUser === '' &&
+      firstAssistant === '' &&
+      record.type === 'response_item' &&
+      payload.type === 'message' &&
+      payload.role === 'assistant'
+    ) {
+      const text = textOfContent(payload.content);
+      // ツールへ渡す JSON がそのまま入っていることがある。見出しにならない。
+      if (text !== '' && !looksLikeMachineOutput(text)) firstAssistant = text;
+    }
   }
 
   if (sessionId === '') return null;
+  const title = firstUser || firstAssistant;
   return {
     kind: 'codex',
     sessionId,
     cwd,
-    title: firstUser ? toTitle(firstUser) : '（内容不明）',
+    title: title ? toTitle(title) : '（内容不明）',
     updatedAt: mtime,
     path,
   };
@@ -395,18 +420,35 @@ export function listExistingSessions(opts: ListSessionsOptions = {}): ExistingSe
 
   candidates.sort((a, b) => b.mtime - a.mtime);
 
-  const sessions: ExistingSession[] = [];
-  for (const candidate of candidates.slice(0, limit)) {
+  // codex は resume のたびに新しい rollout ファイルを作るが、スレッド ID は同じ。
+  // そのまま並べると同じ会話が何度も出るので、ID ごとに 1 件へまとめる。
+  // 上限は「まとめたあとの件数」で数えたいので、少し多めに読む。
+  const byId = new Map<string, ExistingSession>();
+  for (const candidate of candidates.slice(0, limit * 4)) {
     try {
       const head = readHead(candidate.path, headBytes);
       const parsed =
         candidate.kind === 'claude'
           ? parseClaudeSession(candidate.path, head, candidate.mtime)
           : parseCodexSession(candidate.path, head, candidate.mtime);
-      if (parsed) sessions.push(parsed);
+      if (!parsed) continue;
+
+      const key = `${parsed.kind}:${parsed.sessionId}`;
+      const seen = byId.get(key);
+      if (!seen) {
+        byId.set(key, parsed);
+        continue;
+      }
+      // 再開先は最新のファイルに合わせる。見出しは中身のある方を採る。
+      if (isUntitled(seen.title) && !isUntitled(parsed.title)) seen.title = parsed.title;
+      if (seen.cwd === '' && parsed.cwd !== '') seen.cwd = parsed.cwd;
     } catch {
       // 読めないファイルは一覧に出さない
     }
   }
-  return sessions;
+  return [...byId.values()].slice(0, limit);
+}
+
+function isUntitled(title: string): boolean {
+  return title === '' || title === '（内容不明）';
 }

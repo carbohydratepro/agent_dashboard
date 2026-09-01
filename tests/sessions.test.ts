@@ -678,3 +678,115 @@ describe('復元（SPEC §7.3）', () => {
     assert.equal(app.screen.toStrings().join('\n').includes('[r] 一覧に戻す'), false);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('codex の会話一覧', () => {
+  let dir = '';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'vo-codex-'));
+  });
+
+  afterEach(() => {
+    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** rollout ファイルを 1 つ書く。mtime を指定して新旧を作る。 */
+  function rollout(
+    name: string,
+    sessionId: string,
+    records: unknown[],
+    mtimeSec: number,
+  ): void {
+    const day = join(dir, '2026', '09', '01');
+    mkdirSync(day, { recursive: true });
+    const path = join(day, `rollout-${name}-${sessionId}.jsonl`);
+    const lines = [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: { session_id: sessionId, cwd: '/ws', base_instructions: { text: 'x'.repeat(200) } },
+      }),
+      ...records.map((r) => JSON.stringify(r)),
+    ];
+    writeFileSync(path, `${lines.join('\n')}\n`);
+    utimesSync(path, mtimeSec, mtimeSec);
+  }
+
+  const userMsg = (message: string) => ({
+    type: 'event_msg',
+    payload: { type: 'user_message', message },
+  });
+
+  const assistantMsg = (text: string) => ({
+    type: 'response_item',
+    payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
+  });
+
+  function list() {
+    return listExistingSessions({ codexRoot: dir, claudeRoot: join(dir, 'none'), limit: 40 });
+  }
+
+  test('resume で増えたファイルを 1 件にまとめる', () => {
+    // codex は resume のたびに新しい rollout を作るが、スレッド ID は変わらない
+    rollout('a', 'thread-1', [userMsg('最初の指示')], 1_000);
+    rollout('b', 'thread-1', [userMsg('The following is the Codex agent history')], 2_000);
+    rollout('c', 'thread-1', [], 3_000);
+
+    const found = list();
+    assert.equal(found.length, 1, '同じスレッドは 1 件');
+    assert.equal(found[0]!.sessionId, 'thread-1');
+  });
+
+  test('まとめるとき中身のある見出しを拾う', () => {
+    // 新しいファイルには前置きしか無く、古いほうに本物の指示がある
+    rollout('a', 'thread-1', [userMsg('誤って削除した場合に元に戻せないため')], 1_000);
+    rollout('b', 'thread-1', [userMsg('The following is the Codex agent history')], 2_000);
+
+    assert.match(list()[0]!.title, /誤って削除した場合/);
+  });
+
+  test('再開時に差し込まれる前置きを見出しにしない', () => {
+    rollout('a', 'thread-1', [userMsg('The following is the Codex agent history of...')], 1_000);
+    rollout('b', 'thread-2', [userMsg('<user_instructions>\n何か\n</user_instructions>')], 2_000);
+
+    for (const s of list()) {
+      assert.equal(s.title.startsWith('The following'), false, s.title);
+      assert.equal(s.title.startsWith('<'), false, s.title);
+    }
+  });
+
+  test('発話が注入物だけなら本人の返事を見出しにする', () => {
+    rollout(
+      'a',
+      'thread-1',
+      [userMsg('# AGENTS.md instructions for /ws'), assistantMsg('設定を確認しました。')],
+      1_000,
+    );
+
+    assert.equal(list()[0]!.title, '設定を確認しました。');
+  });
+
+  test('ツールへ渡す JSON は見出しにしない', () => {
+    rollout(
+      'a',
+      'thread-1',
+      [userMsg('<environment_context>x</environment_context>'), assistantMsg('{"risk_level":"low"}')],
+      1_000,
+    );
+
+    assert.equal(list()[0]!.title, '（内容不明）', 'ここは無題のほうがまし');
+  });
+
+  test('別スレッドはまとめない', () => {
+    rollout('a', 'thread-1', [userMsg('ひとつ目')], 1_000);
+    rollout('b', 'thread-2', [userMsg('ふたつ目')], 2_000);
+
+    const found = list();
+    assert.equal(found.length, 2);
+    assert.deepEqual(
+      found.map((s) => s.title).sort(),
+      ['ひとつ目', 'ふたつ目'],
+    );
+  });
+});
