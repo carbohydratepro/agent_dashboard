@@ -10,10 +10,12 @@ import { computeLayout, tooSmall, MIN_HEIGHT, MIN_WIDTH } from '../src/tui/layou
 import { drawGauge, wrapText } from '../src/tui/paint.ts';
 import { drawMainScreen } from '../src/tui/render.ts';
 import { formatDuration, formatTokens } from '../src/tui/views/format.ts';
-import { flagsFor, tableRows, tailPath } from '../src/tui/views/table.ts';
+import { flagsFor, tableRows, tableScrollOffset, tailPath } from '../src/tui/views/table.ts';
 import { activityMark, isBusy, thinkingLevel } from '../src/tui/animation.ts';
 import { recentActivity } from '../src/tui/views/detail.ts';
 import { sampleDashboard, FIXTURE_NOW } from './fixtures/dashboard.ts';
+import { createDashboard } from '../src/core/store.ts';
+import type { Dashboard } from '../src/core/types.ts';
 
 // ---------------------------------------------------------------------------
 
@@ -301,5 +303,74 @@ describe('メイン画面', () => {
     const rows = render(100, 32, true);
     for (const row of rows) assert.ok(displayWidth(row) <= 100);
     assert.ok(rows.join('\n').includes('codex-1'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('スロットが画面に入りきらないとき', () => {
+  function dashboardWith(slotCount: number): Dashboard {
+    const d = createDashboard({ title: 'T', slotCount });
+    return d;
+  }
+
+  function draw(slotCount: number, selected: number, height: number): Screen {
+    const screen = new Screen(100, height, 'none');
+    drawMainScreen(screen, {
+      dashboard: dashboardWith(slotCount),
+      selected,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+    });
+    return screen;
+  }
+
+  test('選択が下端を越えたらスクロールする', () => {
+    // 13 行しか出せない画面で 20 スロット
+    assert.equal(tableScrollOffset(0, 20, 13), 0);
+    assert.equal(tableScrollOffset(12, 20, 13), 0, '最後の可視行までは動かない');
+    assert.equal(tableScrollOffset(13, 20, 13), 1);
+    assert.equal(tableScrollOffset(19, 20, 13), 7, '末尾で止まる');
+  });
+
+  test('行が収まるならスクロールしない', () => {
+    assert.equal(tableScrollOffset(5, 6, 13), 0);
+    assert.equal(tableScrollOffset(0, 6, 13), 0);
+  });
+
+  test('上下に動かしても行が飛ばない', () => {
+    // 1 行動かしたらズレも 1 行以内であること
+    let prev = tableScrollOffset(0, 24, 10);
+    for (let sel = 1; sel < 24; sel += 1) {
+      const cur = tableScrollOffset(sel, 24, 10);
+      assert.ok(cur - prev <= 1 && cur >= prev, `${sel}: ${prev} → ${cur}`);
+      prev = cur;
+    }
+  });
+
+  test('見えない行にも選択が届く', () => {
+    // 100x30 では 13 行が限界。16 スロット目を選べば画面に出る。
+    const screen = draw(16, 15, 30);
+    const rows = screen.toStrings();
+    assert.ok(
+      rows.some((r) => r.includes('16')),
+      '最後のスロットが画面に出ている',
+    );
+  });
+
+  // 一覧の見出し行。キーバーにも ↑↓ があるので、そこだけを見る。
+  const headerRow = (screen: Screen): string => screen.toStrings()[2] ?? '';
+
+  test('隠れている行数を知らせる', () => {
+    assert.match(headerRow(draw(16, 0, 30)), /↓3/, '下に 3 行隠れている');
+    assert.match(headerRow(draw(16, 15, 30)), /↑3/, '上に 3 行隠れている');
+  });
+
+  test('収まっているときは何も出さない', () => {
+    const row = headerRow(draw(6, 0, 30));
+    assert.equal(row.includes('↑'), false, row);
+    assert.equal(row.includes('↓'), false, row);
   });
 });

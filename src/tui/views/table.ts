@@ -9,7 +9,7 @@ import type { Dashboard, Session } from '../../core/types.ts';
 import type { Theme } from '../theme.ts';
 import { gaugeColor, sessionColor, STATE_LABEL } from '../theme.ts';
 import { activityMark } from '../animation.ts';
-import { drawGauge, fillRect, hline, textClipped } from '../paint.ts';
+import { drawGauge, fillRect, hline, textClipped, textRight } from '../paint.ts';
 import { displayWidth, padEnd, padStart, truncate } from '../width.ts';
 import { formatDuration, formatTokens } from './format.ts';
 
@@ -64,6 +64,18 @@ export function tableRows(dashboard: Dashboard): Array<Session | null> {
   return rows;
 }
 
+/**
+ * 選択行が見えるようにスクロール量を決める。
+ *
+ * 前回位置を持たず選択位置だけから決める。選択が下端に達したらそこで止まるので、
+ * 上下に動かしても行が飛ばない。
+ */
+export function tableScrollOffset(selected: number, rowCount: number, visible: number): number {
+  if (visible <= 0 || rowCount <= visible) return 0;
+  const max = rowCount - visible;
+  return Math.max(0, Math.min(selected - visible + 1, max));
+}
+
 /** 長いパスは先頭を省いて末尾を見せる */
 export function tailPath(path: string, width: number): string {
   if (displayWidth(path) <= width) return path;
@@ -106,16 +118,28 @@ export function drawTable(screen: Screen, rect: Rect, s: TableViewState): void {
 
   const rows = tableRows(s.dashboard);
   const visible = rect.h - 2;
+  const offset = tableScrollOffset(s.selected, rows.length, visible);
 
-  for (let i = 0; i < visible && i < rows.length; i += 1) {
+  for (let i = 0; i < visible && offset + i < rows.length; i += 1) {
+    const row = offset + i;
     const y = rect.y + 2 + i;
-    const session = rows[i]!;
-    const selected = i === s.selected;
-    const bg = selected ? theme.panelBg : i % 2 === 1 ? theme.rowAlt : theme.bg;
+    const session = rows[row]!;
+    const selected = row === s.selected;
+    const bg = selected ? theme.panelBg : row % 2 === 1 ? theme.rowAlt : theme.bg;
 
     fillRect(screen, rect.x, y, rect.w, 1, bg);
     if (session) drawRow(screen, rect, y, session, widths, bg, selected, s);
-    else drawEmptyRow(screen, rect, y, i, widths, bg, selected, theme);
+    else drawEmptyRow(screen, rect, y, row, widths, bg, selected, theme);
+  }
+
+  // 画面に入りきらない行があることを見出しの右端で知らせる
+  const above = offset;
+  const below = Math.max(0, rows.length - offset - visible);
+  if (above > 0 || below > 0) {
+    const marks = [above > 0 ? `↑${above}` : '', below > 0 ? `↓${below}` : '']
+      .filter((t) => t !== '')
+      .join(' ');
+    textRight(screen, rect.x, rect.y, rect.w - 1, marks, { fg: theme.textDim, bg: theme.bg });
   }
 }
 

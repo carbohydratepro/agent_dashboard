@@ -36,7 +36,6 @@ export const RAW_ROTATE_BYTES = 50 * 1024 * 1024;
 export interface PersistedDashboard {
   version: number;
   title: string;
-    slotCount: number;
   rateLimit: RateLimitInfo | null;
   savedAt: number;
 }
@@ -92,10 +91,20 @@ export class Persistence {
   // 設定
   // -------------------------------------------------------------------------
 
+  get configPath(): string {
+    return join(this.root, 'config.json');
+  }
+
   loadConfig(): DashboardConfig {
-    const path = join(this.root, 'config.json');
-    if (!existsSync(path)) return defaultConfig();
-    return mergeConfig(defaultConfig(), readJson(path));
+    if (!existsSync(this.configPath)) return defaultConfig();
+    return mergeConfig(defaultConfig(), readJson(this.configPath));
+  }
+
+  /** 無ければ既定値で作る。作ったら true。 */
+  ensureConfigFile(): boolean {
+    if (existsSync(this.configPath)) return false;
+    this.saveConfig(defaultConfig());
+    return true;
   }
 
   saveConfig(config: DashboardConfig): void {
@@ -116,8 +125,7 @@ export class Persistence {
     const data: PersistedDashboard = {
       version: SCHEMA_VERSION,
       title: office.title,
-      // removed: office.// removed,
-      slotCount: office.slotCount,
+      // スロット数はここに持たせない。config.json が唯一の出どころ。
       rateLimit: office.rateLimit,
       savedAt: now,
     };

@@ -99,7 +99,7 @@ export function defaultConfig(): DashboardConfig {
       fps: 8,
       ascii: false,
       theme: 'office-green',
-      slotCount: 6,
+      slotCount: 8,
       showSubordinates: true,
       showRateLimitBar: true,
     },

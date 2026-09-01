@@ -90,6 +90,10 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
 
   // 1. 設定と会社情報
   const persistence = new Persistence(opts.root);
+  // 設定で変えられる項目があることが分かるよう、無ければ既定値で書き出しておく
+  if (persistence.ensureConfigFile()) {
+    warnings.push(`設定ファイルを作りました: ${persistence.configPath}`);
+  }
   const config = persistence.loadConfig();
   if (opts.cwd) config.defaults.cwd = opts.cwd;
 
@@ -97,7 +101,9 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
   const store = new StateStore(
     createDashboard({
       title: savedDashboard?.title ?? config.title,
-      slotCount: savedDashboard?.slotCount ?? config.ui.slotCount,
+      // スロット数は config.json だけを見る。保存側にも持たせると、
+      // 設定を書き換えても保存値に上書きされて効かない
+      slotCount: config.ui.slotCount,
       rateLimit: savedDashboard?.rateLimit ?? null,
     }),
   );

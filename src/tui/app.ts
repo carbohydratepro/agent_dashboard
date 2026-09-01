@@ -912,6 +912,7 @@ export class App {
     return [
       { text: '設定ファイル: ~/.agent-dashboard/config.json', color: theme.textDim },
       { text: '' },
+      { text: `スロット数              ${this.store.dashboard.slotCount}`, color: theme.text },
       { text: `コンテキスト窓          ${c.contextWindow.toLocaleString('en-US')}`, color: theme.text },
       { text: `逼迫とみなす比率        ${Math.round(c.contextRestThreshold * 100)}%`, color: theme.text },
       { text: `下書きの自動送信        ${c.autoSendNextMemo ? 'オン' : 'オフ'}`, color: theme.text },

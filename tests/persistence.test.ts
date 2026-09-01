@@ -90,7 +90,7 @@ describe('設定', () => {
       未知のセクション: { x: 1 },
     });
     assert.equal(merged.behavior.autoSendNextMemo, true);
-    assert.equal(merged.ui.slotCount, 6, '触っていないキーは既定値のまま');
+    assert.equal(merged.ui.slotCount, 8, '触っていないキーは既定値のまま');
     assert.equal('未知のセクション' in merged, false);
   });
 
@@ -247,7 +247,41 @@ describe('起動シーケンス（SPEC §14.3）', () => {
     const restored = boot.store.active()[0]!;
     assert.equal(restored.name, emp.name);
     assert.equal(restored.state, 'offline');
-    assert.equal(boot.store.dashboard.slotCount, 6);
+    assert.equal(boot.store.dashboard.slotCount, 8);
+  });
+
+  test('スロット数は config.json で変えられる', async () => {
+    // 保存側にも持たせていた頃は、設定を書き換えても保存値に上書きされて効かなかった
+    const a = session();
+    a.manager.createSession({ kind: 'claude' });
+    a.persistence.saveDashboard(a.store.dashboard, Date.now());
+
+    writeFileSync(
+      join(root, 'config.json'),
+      JSON.stringify({ ui: { slotCount: 12 } }),
+    );
+
+    const boot = await bootstrap({
+      root,
+      drivers: { claude: new MockDriver({ kind: 'claude' }) },
+      skipVersionCheck: true,
+    });
+    assert.equal(boot.store.dashboard.slotCount, 12);
+  });
+
+  test('設定ファイルが無ければ既定値で作る', async () => {
+    assert.equal(existsSync(join(root, 'config.json')), false);
+
+    const boot = await bootstrap({
+      root,
+      drivers: { claude: new MockDriver({ kind: 'claude' }) },
+      skipVersionCheck: true,
+    });
+
+    assert.equal(existsSync(join(root, 'config.json')), true);
+    assert.ok(boot.warnings.some((w) => w.includes('設定ファイルを作りました')));
+    const written = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+    assert.equal(written.ui.slotCount, 8);
   });
 
   test('前回の作業中タスクを中断扱いにし、指示を下書きへ戻す', async () => {
