@@ -12,6 +12,7 @@ import { isPrintable } from './input.ts';
 import type { Theme } from './theme.ts';
 import { DEFAULT_THEME, STATE_LABEL_JA } from './theme.ts';
 import { drawMainScreen, sessionAtRow } from './render.ts';
+import { CURSOR_HIDE, CURSOR_SHOW, moveTo } from './ansi.ts';
 import { recentTurns } from './views/detail.ts';
 import { LOCAL_COMMANDS, parseCommand, runLocalCommand } from '../core/local-commands.ts';
 import type { RecentTurn } from './views/detail.ts';
@@ -283,11 +284,20 @@ export class App {
       this.screen.resize(this.terminal.columns, this.terminal.rows);
     }
     this.#draw();
-    this.terminal.write(this.screen.render());
+
+    // カーソルは差分描画のあとに置く。順番を逆にすると、
+    // 描画の書き出しでカーソルが動いてしまう。
+    const cursor = this.screen.cursor;
+    this.terminal.write(
+      this.screen.render() +
+        (cursor ? moveTo(cursor.x, cursor.y) + CURSOR_SHOW : CURSOR_HIDE),
+    );
   }
 
   #draw(): void {
     const theme = this.theme;
+    // 入力欄のある画面だけが置き直す。前の画面の位置を引きずらない。
+    this.screen.cursor = null;
     switch (this.screenId) {
       case 'main':
         drawMainScreen(this.screen, {
@@ -730,12 +740,10 @@ export class App {
       });
     }
     if (offset > 0) this.screen.set(x + 1, y + 3, '‹', { fg: theme.textDim, bg: theme.panelBg });
-    this.screen.set(
-      Math.min(x + 2 + pos.column - offset, x + w - 2),
-      y + 3 + Math.min(pos.line, h - 6),
-      '▏',
-      { fg: theme.accent, bg: theme.panelBg },
-    );
+    this.screen.cursor = {
+      x: Math.min(x + 2 + pos.column - offset, x + w - 2),
+      y: y + 3 + Math.min(pos.line, h - 6),
+    };
 
     textCentered(this.screen, x, y + h - 2, w, '[Enter] 保存    [Ctrl+J] 改行    [Esc] 取消', {
       fg: theme.textDim,
@@ -799,12 +807,10 @@ export class App {
           if (offset > 0) {
             this.screen.set(valueX - 1, y + 2 + i, '‹', { fg: theme.textDim, bg: theme.panelBg });
           }
-          this.screen.set(
-            Math.min(valueX + pos.column - offset, valueX + valueWidth - 1),
-            y + 2 + i,
-            '▏',
-            { fg: theme.accent, bg: theme.panelBg },
-          );
+          this.screen.cursor = {
+            x: Math.min(valueX + pos.column - offset, valueX + valueWidth - 1),
+            y: y + 2 + i,
+          };
         }
         continue;
       }

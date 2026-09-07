@@ -235,7 +235,13 @@ describe('画面の中の日本語入力', () => {
     const text = h.app.screen.toStrings().join('\n');
 
     assert.ok(text.includes('‹'), '横に流れていることが分かる印が出る');
-    assert.ok(text.includes('▏'), 'カーソルが見えている');
+    // 未確定文字列は端末の本物のカーソルの位置に出る。
+    // 打っている場所に置いていないと、変換中の文字が見えない。
+    assert.ok(h.app.screen.cursor, 'カーソルの置き場所が決まっている');
+    assert.ok(
+      h.app.screen.cursor!.x < 100 && h.app.screen.cursor!.y < 32,
+      '画面の中にある',
+    );
     for (const row of h.app.screen.toStrings()) {
       assert.ok(displayWidth(row) <= 100, `はみ出し: ${row}`);
     }
@@ -272,7 +278,7 @@ describe('画面の中の日本語入力', () => {
 
     const text = h.app.screen.toStrings().join('\n');
     assert.ok(text.includes('‹'));
-    assert.ok(text.includes('▏'));
+    assert.ok(h.app.screen.cursor, '下書き欄にもカーソルが置かれる');
     h.term.feed('\r');
     assert.equal(emp.nextPrompt, '長い下書き'.repeat(30));
   });
@@ -347,5 +353,81 @@ describe('改行（端末に奪われないキー）', () => {
     h.term.feed('\r');
     await settle();
     assert.equal(h.claude.calls[0]?.prompt, '認証を直して\nテストも追加して');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('未確定文字列の置き場所', () => {
+  /**
+   * 変換中の文字は端末がカーソルの位置に描く。こちらがカーソルを隠したままだと
+   * 打っている最中の文字がどこにも出ず、確定して初めて現れる。
+   */
+  test('入力欄のある画面ではカーソルを見せる', () => {
+    const h = harness();
+    h.manager.createSession({ kind: 'claude' });
+
+    h.term.feed('e');
+    h.app.render();
+    assert.ok(h.app.screen.cursor, '下書き');
+
+    h.term.feed('\x1b');
+    h.term.feed('\r');
+    h.app.render();
+    assert.ok(h.app.screen.cursor, '会話');
+  });
+
+  test('入力欄が無い画面では隠す', () => {
+    const h = harness();
+    h.manager.createSession({ kind: 'claude' });
+
+    h.app.render();
+    assert.equal(h.app.screen.cursor, null, '一覧');
+
+    h.term.feed('?');
+    h.app.render();
+    assert.equal(h.app.screen.cursor, null, 'ヘルプ');
+  });
+
+  test('打った文字の直後に置く', () => {
+    const h = harness();
+    h.manager.createSession({ kind: 'claude' });
+    h.term.feed('\r');
+    h.app.render();
+    const empty = h.app.screen.cursor!;
+
+    h.term.feed('あいう');
+    h.app.render();
+    const typed = h.app.screen.cursor!;
+
+    assert.equal(typed.y, empty.y, '同じ行');
+    assert.equal(typed.x - empty.x, 6, '全角 3 文字ぶん右へ動く');
+  });
+
+  test('端末へカーソルの指示を送る', () => {
+    const h = harness();
+    h.manager.createSession({ kind: 'claude' });
+    h.term.feed('\r');
+    h.term.output.length = 0;
+    h.app.render();
+    const out = h.term.output.join('');
+
+    // 位置指定と表示。これが無いと変換中の文字が出ない。
+    assert.match(out, /\x1b\[\d+;\d+H/, '位置を指定している');
+    assert.ok(out.includes('\x1b[?25h'), 'カーソルを見せている');
+  });
+
+  test('画面を移ると引きずらない', () => {
+    const h = harness();
+    h.manager.createSession({ kind: 'claude' });
+    h.term.feed('\r');
+    h.app.render();
+    assert.ok(h.app.screen.cursor);
+
+    h.term.feed('\x1b');
+    h.term.output.length = 0;
+    h.app.render();
+    assert.equal(h.app.screen.cursor, null);
+    assert.ok(h.term.output.join('').includes('\x1b[?25l'), '一覧に戻ったら隠す');
   });
 });

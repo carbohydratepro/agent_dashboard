@@ -67,6 +67,15 @@ export class Screen {
   height: number;
   colorMode: ColorMode;
 
+  /**
+   * 端末の本物のカーソルを置く位置。null なら隠す。
+   *
+   * 日本語入力の未確定文字列は、端末がカーソルの位置に描く。
+   * カーソルを隠したままだと打っている最中の文字がどこにも出ず、
+   * 確定して初めて現れる。入力欄があるときは必ずここを埋める。
+   */
+  cursor: { x: number; y: number } | null = null;
+
   #back: Cell[];
   #front: Cell[];
   #forceRedraw = true;
@@ -95,6 +104,8 @@ export class Screen {
   clear(style: Style = {}): void {
     const cell: Cell = { ch: ' ', ...style };
     this.#back.fill(cell);
+    // 描き直すたびに置き直す。前の画面の位置を引きずらない。
+    this.cursor = null;
   }
 
   inBounds(x: number, y: number): boolean {

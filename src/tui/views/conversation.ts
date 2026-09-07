@@ -426,12 +426,12 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
   if (offset > 0) {
     screen.set(2, y + 1, '‹', { fg: theme.textDim, bg: theme.bg });
   }
-  screen.set(
-    Math.min(4 + pos.column - offset, screen.width - 2),
-    y + 1 + Math.min(pos.line, inputHeight - 3),
-    '▏',
-    { fg: theme.userText, bg: theme.bg },
-  );
+  // 端末の本物のカーソルをここに置く。日本語の未確定文字列はカーソルの
+  // 位置に出るので、置かないと打っている最中の文字が見えない。
+  screen.cursor = {
+    x: Math.min(4 + pos.column - offset, screen.width - 2),
+    y: y + 1 + Math.min(pos.line, inputHeight - 3),
+  };
 
   // キーバー
   textClipped(
