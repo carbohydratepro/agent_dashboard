@@ -182,13 +182,12 @@ export const COMPLETION_ROWS = 6;
  * 一度に動かす行数。
  *
  * 半画面ずつ動かすと、残る行が少なすぎて「ページが切り替わった」ように見え、
- * どこを読んでいたか見失う。1/4 ほどにして、大半の行を残したまま送る。
+ * どこを読んでいたか見失う。既定は 2 行だけ送り、目で追える速さにする。
  */
-export function scrollStep(screenHeight: number): number {
-  // 枠・入力欄・キーバーを引いた、本文がおよそ使える高さ
-  const body = Math.max(1, screenHeight - 6);
-  return Math.max(2, Math.floor(body / 4));
-}
+export const SCROLL_LINES = 2;
+
+/** Shift を足したときの行数。少し急ぎたいとき用。 */
+export const SCROLL_LINES_FAST = 5;
 
 export interface RenderedLine {
   /** 装飾ごとに分かれた断片。text だけ見れば素の文字列になる。 */
@@ -321,6 +320,12 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
 
   // 本文
   const lines = layoutEntries(conv.entries, screen.width - 2, theme, conv.showSubordinates);
+
+  // 行数を超えてスクロールした分は捨てる。
+  // 溜めたままだと、戻すのに同じ回数だけキーを押す羽目になる。
+  const maxScroll = Math.max(0, lines.length - bodyHeight);
+  if (conv.scrollFromBottom > maxScroll) conv.scrollFromBottom = maxScroll;
+
   const start = Math.max(0, lines.length - bodyHeight - conv.scrollFromBottom);
   for (let i = 0; i < bodyHeight; i += 1) {
     const line = lines[start + i];
@@ -477,7 +482,7 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
     screen.width - 2,
     s.completion
       ? '[Tab/↑↓]候補を選ぶ  [Enter]決定  [Esc]やめる'
-      : '[Enter]送信 [Ctrl+J]改行 [Ctrl+U/D]過去の会話 [Alt+e]控え [Alt+p]控えを送る [Esc]戻る',
+      : '[Enter]送信 [Ctrl+J]改行 [Ctrl+U/D]遡る(Shift で 5 行) [Alt+e]控え [Alt+p]控えを送る [Esc]戻る',
     { fg: theme.textDim, bg: theme.bg },
   );
 }

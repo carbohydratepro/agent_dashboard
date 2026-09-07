@@ -45,7 +45,12 @@ import type { UsageMonitor } from '../core/usage-monitor.ts';
 import type { NetworkMonitor } from '../core/network.ts';
 import { canSendDraft } from './views/detail.ts';
 import { formatDuration, formatTokens } from './views/format.ts';
-import { drawConversation, ConversationState, scrollStep } from './views/conversation.ts';
+import {
+  drawConversation,
+  ConversationState,
+  SCROLL_LINES,
+  SCROLL_LINES_FAST,
+} from './views/conversation.ts';
 import { applyCompletion, commandPrefix, completionFor, moveSelection } from './completion.ts';
 import type { CompletionState } from './completion.ts';
 import { drawApproval } from './views/approval.ts';
@@ -1804,12 +1809,13 @@ export class App {
     }
     // 会話は Ctrl+U / Ctrl+D だけ。PgUp / PgDn は端末側で拾われることがあり、
     // 効いたり効かなかったりするので受けない。
-    if (k.ctrl && k.ch === 'u') {
-      conv.scrollBy(-scrollStep(this.screen.height));
-      return;
-    }
-    if (k.ctrl && k.ch === 'd') {
-      conv.scrollBy(scrollStep(this.screen.height));
+    //
+    // Shift を足すと速い。ただし Ctrl+Shift+U は、端末が修飾を報告しない限り
+    // Ctrl+U と同じバイトで届く。届かない環境のために Alt+u / Alt+d も同じ動きにする。
+    if ((k.ctrl || k.alt) && (k.ch === 'u' || k.ch === 'd')) {
+      const fast = k.shift || k.alt;
+      const lines = fast ? SCROLL_LINES_FAST : SCROLL_LINES;
+      conv.scrollBy(k.ch === 'u' ? -lines : lines);
       return;
     }
     if (k.name === 'up' && conv.input.isEmpty) {

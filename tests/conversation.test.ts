@@ -13,7 +13,8 @@ import { SeqIdGen } from '../src/core/clock.ts';
 import {
   ConversationState,
   drawConversation,
-  scrollStep,
+  SCROLL_LINES,
+  SCROLL_LINES_FAST,
   layoutEntries,
   lineText,
   MAX_ENTRIES,
@@ -498,7 +499,7 @@ describe('過去の会話を遡る', () => {
 
   test('キーバーに遡り方が出ている', () => {
     const rows = draw(longConversation(2));
-    assert.ok(rows.some((r) => r.includes('[Ctrl+U/D]過去の会話')));
+    assert.ok(rows.some((r) => r.includes('[Ctrl+U/D]遡る')));
   });
 
   test('前回までのやり取りが会話に入る', () => {
@@ -546,23 +547,8 @@ describe('過去の会話を遡る', () => {
 // ---------------------------------------------------------------------------
 
 describe('遡りかた', () => {
-  test('一度に動くのは 1/4 ほど', () => {
-    // 半画面ずつだと残る行が少なく、ページが切り替わったように見える
-    for (const height of [24, 30, 50]) {
-      const body = height - 6;
-      const step = scrollStep(height);
-      assert.ok(step >= 2, `${height}: ${step}`);
-      assert.ok(step <= body / 3, `${height}: 本文 ${body} 行に対して ${step} 行は動きすぎ`);
-      assert.ok(step >= body / 6, `${height}: ${step} 行では進まなすぎ`);
-    }
-  });
-
-  test('画面が小さくても止まらない', () => {
-    assert.ok(scrollStep(8) >= 2);
-    assert.ok(scrollStep(1) >= 2);
-  });
-
-  test('Ctrl+U / Ctrl+D で動き、PgUp / PgDn では動かない', async () => {
+  /** 40 ターンぶんの会話を開いた状態にする */
+  async function opened() {
     const h = harness();
     const session = h.manager.createSession({ kind: 'claude', name: 'claude-1' });
     for (let i = 0; i < 40; i += 1) {
@@ -575,40 +561,79 @@ describe('遡りかた', () => {
       const row = h.view().split('\n').find((r) => r.includes('↑ さらに')) ?? '';
       return Number(row.match(/↑ さらに (\d+) 行/)?.[1] ?? 0);
     };
+    return { ...h, above };
+  }
 
-    const atBottom = above();
-
-    h.press('\x1b[5~');
-    assert.equal(above(), atBottom, 'PgUp では動かない');
+  test('Ctrl+U / Ctrl+D は 2 行ずつ', async () => {
+    const h = await opened();
+    const start = h.above();
 
     h.press('\x15');
-    const afterCtrlU = above();
-    assert.ok(afterCtrlU < atBottom, 'Ctrl+U で遡る');
+    assert.equal(h.above(), start - SCROLL_LINES);
 
-    h.press('\x1b[6~');
-    assert.equal(above(), afterCtrlU, 'PgDn でも動かない');
+    h.press('\x15');
+    assert.equal(h.above(), start - SCROLL_LINES * 2);
 
     h.press('\x04');
-    assert.ok(above() > afterCtrlU, 'Ctrl+D で戻る');
+    assert.equal(h.above(), start - SCROLL_LINES);
   });
 
-  test('一度に消える行は画面の一部だけ', async () => {
-    // 大半の行が残るので、どこを読んでいたか見失わない
-    const h = harness();
-    const session = h.manager.createSession({ kind: 'claude', name: 'claude-1' });
-    for (let i = 0; i < 40; i += 1) {
-      await h.manager.dispatch(session.id, `指示 ${i}`);
-    }
-    h.press('\r');
+  test('Shift を足すと 5 行ずつ', async () => {
+    const h = await opened();
+    const start = h.above();
 
-    const bodyOf = (): string[] =>
+    // 端末が修飾を報告する形（modifyOtherKeys）
+    h.press('\x1b[27;6;117~');
+    assert.equal(h.above(), start - SCROLL_LINES_FAST);
+
+    h.press('\x1b[27;6;100~');
+    assert.equal(h.above(), start);
+  });
+
+  test('Alt+u / Alt+d でも 5 行ずつ', async () => {
+    // Ctrl+Shift+U は端末が修飾を報告しないと Ctrl+U と同じバイトで届く。
+    // 届かない環境でも速い送りが使えるように。
+    const h = await opened();
+    const start = h.above();
+
+    h.press('\x1bu');
+    assert.equal(h.above(), start - SCROLL_LINES_FAST);
+
+    h.press('\x1bd');
+    assert.equal(h.above(), start);
+  });
+
+  test('PgUp / PgDn では動かない', async () => {
+    const h = await opened();
+    const start = h.above();
+
+    h.press('\x1b[5~');
+    assert.equal(h.above(), start);
+
+    h.press('\x1b[6~');
+    assert.equal(h.above(), start);
+  });
+
+  test('最上部より先へは行かない', async () => {
+    const h = await opened();
+    for (let i = 0; i < 300; i += 1) h.press('\x15');
+    assert.equal(h.above(), 0, '先頭で止まる');
+
+    // 戻すのに 300 回押さされない
+    h.press('\x04');
+    assert.ok(h.above() > 0);
+  });
+
+  test('2 行送っても画面の大半は残る', async () => {
+    const h = await opened();
+    const body = (): string[] =>
       h.view().split('\n').slice(1, 25).filter((r) => r.trim() !== '');
 
-    const before = new Set(bodyOf());
+    const before = new Set(body());
     h.press('\x15');
-    const after = bodyOf();
+    const after = body();
 
     const kept = after.filter((r) => before.has(r)).length;
-    assert.ok(kept >= after.length / 2, `${kept}/${after.length} 行しか残っていない`);
+    assert.ok(kept >= after.length - 4, `${kept}/${after.length} 行しか残っていない`);
   });
 });

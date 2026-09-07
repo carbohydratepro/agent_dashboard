@@ -8,6 +8,8 @@ import {
   CLEAR_SCREEN,
   CURSOR_HIDE,
   CURSOR_SHOW,
+  MODIFY_OTHER_KEYS_OFF,
+  MODIFY_OTHER_KEYS_ON,
   detectColorMode,
 } from './ansi.ts';
 import type { ColorMode } from './ansi.ts';
@@ -107,7 +109,7 @@ export class NodeTerminal implements Terminal {
     this.#stdin.resume();
     this.#stdin.on('data', this.#onData);
     this.#stdout.on('resize', this.#onResize);
-    this.write(ALT_SCREEN_ON + CURSOR_HIDE + CLEAR_SCREEN + PASTE_MODE_ON);
+    this.write(ALT_SCREEN_ON + CURSOR_HIDE + CLEAR_SCREEN + PASTE_MODE_ON + MODIFY_OTHER_KEYS_ON);
   }
 
   exit(): void {
@@ -115,7 +117,7 @@ export class NodeTerminal implements Terminal {
     this.#entered = false;
     if (this.#flushTimer) clearTimeout(this.#flushTimer);
     this.#flushTimer = null;
-    this.write(PASTE_MODE_OFF + CURSOR_SHOW + ALT_SCREEN_OFF);
+    this.write(MODIFY_OTHER_KEYS_OFF + PASTE_MODE_OFF + CURSOR_SHOW + ALT_SCREEN_OFF);
     this.#stdin.off('data', this.#onData);
     this.#stdout.off('resize', this.#onResize);
     if (this.#stdin.isTTY) this.#stdin.setRawMode(false);

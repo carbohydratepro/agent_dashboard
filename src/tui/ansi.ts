@@ -12,6 +12,18 @@ export const CURSOR_SHOW = `${ESC}?25h`;
 export const ALT_SCREEN_ON = `${ESC}?1049h`;
 export const ALT_SCREEN_OFF = `${ESC}?1049l`;
 export const CLEAR_SCREEN = `${ESC}2J`;
+
+/**
+ * xterm の modifyOtherKeys（水準 1）。
+ *
+ * これを立てると、素のバイトでは表せない修飾つきのキーだけを
+ * `ESC [ 27 ; <修飾> ; <文字コード> ~` で報告してくれる。
+ * Ctrl+Shift+U と Ctrl+U はどちらも 0x15 で届いてしまい区別できないので、
+ * これが無いと Shift を見分けられない。水準 1 は「他に表しようがないもの」
+ * だけを対象にするので、普通のキーの届き方は変わらない。
+ */
+export const MODIFY_OTHER_KEYS_ON = `${ESC}>4;1m`;
+export const MODIFY_OTHER_KEYS_OFF = `${ESC}>4m`;
 export const RESET = `${ESC}0m`;
 
 export function moveTo(x: number, y: number): string {
