@@ -18,6 +18,44 @@ export interface DetailViewState {
   theme: Theme;
   now: number;
   expanded: boolean;
+  /** 直近のやり取り。新しいものが後ろ。 */
+  turns?: readonly RecentTurn[];
+}
+
+/** 指示と、それに対する返事の組。 */
+export interface RecentTurn {
+  prompt: string;
+  reply: string;
+}
+
+/**
+ * 会話の履歴を「指示 → 返事」の組にする。
+ *
+ * ツールの呼び出しを並べても何をしたのかは分からない。
+ * 頼んだことと、返ってきた答えの頭だけあれば、ぱっと見で思い出せる。
+ */
+export function recentTurns(
+  entries: ReadonlyArray<{ t: string; text?: string }>,
+  max: number,
+): RecentTurn[] {
+  const turns: RecentTurn[] = [];
+  for (const entry of entries) {
+    if (entry.t === 'user') {
+      turns.push({ prompt: entry.text ?? '', reply: '' });
+      continue;
+    }
+    // 返事は分割して届くので、その指示に対する最初のかたまりだけ拾う
+    if (entry.t === 'assistant') {
+      const last = turns.at(-1);
+      if (last && last.reply === '') last.reply = entry.text ?? '';
+    }
+  }
+  return turns.filter((t) => t.prompt !== '').slice(-max);
+}
+
+/** 複数行を 1 行に潰す。詳細パネルは 1 件 1 行しか使えない。 */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 /** いま Enter で下書きをそのまま送れる状態か */
@@ -164,10 +202,39 @@ export function drawDetail(screen: Screen, rect: Rect, s: DetailViewState): void
     textRight(screen, rect.x + 2, y, inner, taskElapsed, { fg: theme.textDim, bg });
     y += 1;
 
-    for (const line of recentActivity(task.events, s.expanded ? rect.y + rect.h - y - 1 : 2)) {
+    // 動いている間だけ、いま何をしているかを出す。
+    // 止まっているときにコマンドの羅列が残っても読み取れるものが無い。
+    if (task.status === 'running') {
+      for (const line of recentActivity(task.events, s.expanded ? 4 : 1)) {
+        if (y >= rect.y + rect.h - 1) break;
+        textClipped(screen, rect.x + 4, y, inner - 2, line, { fg: theme.textDim, bg });
+        y += 1;
+      }
+    }
+  }
+
+  // 直近のやり取り
+  const turns = s.turns ?? [];
+  if (turns.length > 0 && y < rect.y + rect.h - 1) {
+    textClipped(screen, rect.x + 2, y, inner, '直近のやり取り', { fg: theme.textDim, bg });
+    y += 1;
+
+    // 1 件 2 行（指示 + 返事）。畳んでいるときは入るぶんだけ。
+    const room = Math.max(0, rect.y + rect.h - 1 - y);
+    for (const turn of turns.slice(-Math.max(1, Math.floor(room / 2)))) {
       if (y >= rect.y + rect.h - 1) break;
-      textClipped(screen, rect.x + 4, y, inner - 2, line, { fg: theme.textDim, bg });
+      textClipped(screen, rect.x + 4, y, inner - 4, `> ${oneLine(turn.prompt)}`, {
+        fg: theme.userText,
+        bg,
+      });
       y += 1;
+      if (turn.reply !== '' && y < rect.y + rect.h - 1) {
+        textClipped(screen, rect.x + 6, y, inner - 6, oneLine(turn.reply), {
+          fg: theme.text,
+          bg,
+        });
+        y += 1;
+      }
     }
   }
 

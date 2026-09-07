@@ -13,7 +13,7 @@ import { formatDuration, formatTokens } from '../src/tui/views/format.ts';
 import { activityText, flagsFor, tableRows, tableScrollOffset, tailPath } from '../src/tui/views/table.ts';
 import { ResourceMonitor, formatBytes } from '../src/core/resources.ts';
 import { activityMark, isBusy, thinkingLevel } from '../src/tui/animation.ts';
-import { recentActivity } from '../src/tui/views/detail.ts';
+import { recentActivity, recentTurns } from '../src/tui/views/detail.ts';
 import { sampleDashboard, FIXTURE_NOW } from './fixtures/dashboard.ts';
 import { createDashboard } from '../src/core/store.ts';
 import type { Dashboard } from '../src/core/types.ts';
@@ -517,5 +517,83 @@ describe('いま何をしているか', () => {
     const a = activityText(session);
     assert.equal(a.busy, false);
     assert.equal(a.text, session.workspace.requestedCwd);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('詳細パネルの直近のやり取り', () => {
+  test('指示と返事の組にする', () => {
+    const entries = [
+      { t: 'user', text: 'テストを直して' },
+      { t: 'tool', name: 'Bash', detail: 'npm test' },
+      { t: 'assistant', text: '2 件直しました。' },
+      { t: 'user', text: 'コミットして' },
+      { t: 'assistant', text: '3 件コミットしました。' },
+    ];
+
+    assert.deepEqual(recentTurns(entries, 5), [
+      { prompt: 'テストを直して', reply: '2 件直しました。' },
+      { prompt: 'コミットして', reply: '3 件コミットしました。' },
+    ]);
+  });
+
+  test('新しいほうを残す', () => {
+    const entries = Array.from({ length: 10 }, (_, i) => ({ t: 'user', text: `指示 ${i}` }));
+    const turns = recentTurns(entries, 3);
+    assert.equal(turns.length, 3);
+    assert.equal(turns[2]!.prompt, '指示 9');
+  });
+
+  test('返事がまだ無くても指示は出す', () => {
+    const turns = recentTurns([{ t: 'user', text: 'いま頼んだところ' }], 3);
+    assert.deepEqual(turns, [{ prompt: 'いま頼んだところ', reply: '' }]);
+  });
+
+  test('返事が分割で届いても最初のかたまりだけ', () => {
+    const entries = [
+      { t: 'user', text: 'やって' },
+      { t: 'assistant', text: 'まず調べます。' },
+      { t: 'assistant', text: '終わりました。' },
+    ];
+    assert.equal(recentTurns(entries, 3)[0]!.reply, 'まず調べます。');
+  });
+
+  test('画面に出る', () => {
+    const dashboard = sampleDashboard();
+    const screen = new Screen(120, 30, 'none');
+    drawMainScreen(screen, {
+      dashboard,
+      selected: 0,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+      turns: [
+        { prompt: 'テストを直して', reply: '2 件直しました。' },
+        { prompt: 'コミットして', reply: '3 件コミットしました。' },
+      ],
+    });
+    const view = screen.toStrings().join('\n');
+
+    assert.ok(view.includes('直近のやり取り'));
+    assert.ok(view.includes('コミットして'));
+    assert.ok(view.includes('3 件コミットしました。'));
+  });
+
+  test('複数行の返事でも 1 行に収める', () => {
+    const dashboard = sampleDashboard();
+    const screen = new Screen(120, 30, 'none');
+    drawMainScreen(screen, {
+      dashboard,
+      selected: 0,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+      turns: [{ prompt: '調べて', reply: '一行目\n二行目\n三行目' }],
+    });
+    const rows = screen.toStrings();
+    assert.ok(rows.some((r) => r.includes('一行目 二行目 三行目')), '潰して 1 行にする');
   });
 });

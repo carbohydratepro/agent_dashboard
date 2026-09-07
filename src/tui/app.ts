@@ -12,6 +12,9 @@ import { isPrintable } from './input.ts';
 import type { Theme } from './theme.ts';
 import { DEFAULT_THEME, STATE_LABEL_JA } from './theme.ts';
 import { drawMainScreen, sessionAtRow } from './render.ts';
+import { recentTurns } from './views/detail.ts';
+import { LOCAL_COMMANDS, parseCommand, runLocalCommand } from '../core/local-commands.ts';
+import type { RecentTurn } from './views/detail.ts';
 import { ResourceMonitor } from '../core/resources.ts';
 import type { ResourceSample } from '../core/resources.ts';
 import { drawPanel, panelMetrics } from './views/panel.ts';
@@ -295,6 +298,7 @@ export class App {
           theme,
           banner: this.banner,
           resources: this.#resources,
+          turns: this.#turnsForSelected(),
         });
         return;
 
@@ -439,25 +443,40 @@ export class App {
   #refreshCompletion(session: Session, conv: ConversationState): void {
     this.#completionNote = null;
 
-    // codex は exec モードでスラッシュコマンドを解釈せず、ただのプロンプトになる。
-    // 黙って候補を出さないと「壊れている」と見えるので、理由を書く。
-    if (session.kind !== 'claude') {
-      this.#completion = null;
-      if (commandPrefix(conv.input.value, conv.input.cursor) !== null) {
-        this.#completionNote = `codex は指示文としてそのまま送ります（${session.kind} exec はスラッシュコマンドを解釈しません）`;
+    // claude は本体が返してきた一覧をそのまま使う。
+    // codex には本体のコマンドが無いので、ダッシュボードが答えるぶんだけ出す。
+    if (session.kind === 'claude') {
+      const snapshot = this.#usage?.snapshot('claude');
+      const commands = snapshot?.slashCommands;
+      if (!commands || commands.length === 0) {
+        this.#completion = null;
+        return;
       }
+      this.#completion = completionFor(conv.input.value, conv.input.cursor, {
+        commands,
+        terminalOnly: snapshot.terminalOnlyCommands ?? [],
+      });
       return;
     }
-    const snapshot = this.#usage?.snapshot('claude');
-    const commands = snapshot?.slashCommands;
-    if (!commands || commands.length === 0) {
-      this.#completion = null;
-      return;
-    }
+
     this.#completion = completionFor(conv.input.value, conv.input.cursor, {
-      commands,
-      terminalOnly: snapshot.terminalOnlyCommands ?? [],
+      commands: LOCAL_COMMANDS.map((c) => c.name),
+      terminalOnly: [],
     });
+
+    if (this.#completion && commandPrefix(conv.input.value, conv.input.cursor) !== null) {
+      this.#completionNote = 'ダッシュボードが答えます（codex 本体はスラッシュコマンドを解釈しません）';
+    }
+  }
+
+  /**
+   * 一覧で選んでいるセッションの直近のやり取り。
+   * 会話は #conversationFor が覚えているので、読み直しは初回だけ。
+   */
+  #turnsForSelected(): RecentTurn[] {
+    const session = this.selectedSession;
+    if (!session) return [];
+    return recentTurns(this.#conversationFor(session.id).entries, 6);
   }
 
   #conversationFor(sessionId: string): ConversationState {
@@ -1365,6 +1384,69 @@ export class App {
     this.#openScreen('confirm');
   }
 
+  /**
+   * ダッシュボード側で答えられるスラッシュコマンドを処理する。
+   *
+   * codex 本体はスラッシュコマンドを解釈しないので（FINDINGS §9）、
+   * 状態や設定のようにこちらが持っている情報は、ここで返してしまう。
+   * CLI に投げる必要が無いぶん、実行の枠も消費しない。
+   *
+   * 戻り値が false なら、この入力はもう処理し終えている。
+   */
+  #handleLocalCommand(session: Session, conv: ConversationState, text: string): boolean {
+    const result = runLocalCommand(text, {
+      session,
+      usageLine: this.#usageLineFor(session.kind),
+    });
+
+    const echo = (body: string): void => {
+      conv.pushUser(text);
+      // 詳細パネルと同じで、1 行ずつのほうが読める
+      for (const line of body.split('\n')) conv.pushSystem(line);
+      conv.scrollToBottom();
+      this.#completion = null;
+      this.#completionNote = null;
+    };
+
+    switch (result.kind) {
+      case 'answer':
+        echo(result.text);
+        return false;
+
+      case 'changed':
+        if (result.model !== undefined) session.model = result.model;
+        echo(result.text);
+        return false;
+
+      case 'action':
+        conv.pushUser(text);
+        this.#compact();
+        return false;
+
+      case 'passthrough':
+        if (session.kind === 'codex' && text.startsWith('/')) {
+          // 知らないコマンドを黙って送ると、ただの指示文になって枠を消費する
+          conv.input.setValue(text);
+          this.#notify(
+            `codex は /${parseCommand(text)?.name ?? ''} を解釈しません。/help で使えるものを出せます。`,
+            this.theme.gauge.high,
+          );
+          return false;
+        }
+        this.#send(session, text);
+        return true;
+    }
+  }
+
+  /** 使用量を 1 行にしたもの。まだ取れていなければ null。 */
+  #usageLineFor(kind: AgentKind): string | null {
+    const snapshot = this.#usage?.snapshot(kind);
+    if (!snapshot || snapshot.windows.length === 0) return null;
+    return snapshot.windows
+      .map((w) => `${w.label} ${Math.round(100 - w.usedPercent)}% 残`)
+      .join('  ');
+  }
+
   #compact(): void {
     const session = this.selectedSession;
     if (!session) return;
@@ -1544,17 +1626,7 @@ export class App {
     if (k.name === 'enter') {
       const text = conv.input.submit();
       if (text !== null) {
-        // codex は exec モードでスラッシュコマンドを解釈しない。
-        // 黙って送るとただのプロンプトになってトークンを消費する。
-        if (session.kind === 'codex' && text.startsWith('/')) {
-          conv.input.setValue(text);
-          this.#notify(
-            'codex はスラッシュコマンドを解釈しません（普通のプロンプトとして送られます）',
-            this.theme.gauge.high,
-          );
-          return;
-        }
-        this.#send(session, text);
+        if (!this.#handleLocalCommand(session, conv, text)) return;
       }
       else if (session.nextPrompt.trim() !== '') this.#send(session, null);
       this.#completion = null;

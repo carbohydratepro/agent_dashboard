@@ -305,12 +305,10 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
 
   // スラッシュコマンドの候補（入力欄の真上）
   const completion = s.completion ?? null;
-  const note = completion ? null : (s.completionNote ?? null);
-  const completionRows = completion
-    ? Math.min(COMPLETION_ROWS, completion.candidates.length)
-    : note
-      ? 1
-      : 0;
+  // 注記は候補があっても出す。codex では候補の意味そのものが違う。
+  const note = s.completionNote ?? null;
+  const completionRows =
+    (completion ? Math.min(COMPLETION_ROWS, completion.candidates.length) : 0) + (note ? 1 : 0);
 
   let y = screen.height - 1 - inputHeight - memoRow - completionRows - 1;
   hline(screen, 0, y, screen.width, { fg: theme.border, bg: theme.bg });

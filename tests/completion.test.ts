@@ -14,6 +14,8 @@ import {
   moveSelection,
 } from '../src/tui/completion.ts';
 import { parseProbeOutput } from '../src/core/usage.ts';
+import { parseCommand, runLocalCommand } from '../src/core/local-commands.ts';
+import type { Session } from '../src/core/types.ts';
 import { ConversationState, drawConversation } from '../src/tui/views/conversation.ts';
 import { Screen } from '../src/tui/screen.ts';
 import { DEFAULT_THEME } from '../src/tui/theme.ts';
@@ -257,16 +259,36 @@ describe('画面での動き', () => {
     assert.equal(h.view().includes('候補を選ぶ'), false);
   });
 
-  test('codex には候補を出さず、送る前に知らせる', async () => {
+  test('codex にはダッシュボードが答えるぶんを出す', async () => {
     const h = harness('codex');
     await h.usage.refresh(undefined, { force: true });
     h.term.feed('\r');
-    h.term.feed('/compact');
-    assert.equal(h.view().includes('候補を選ぶ'), false, 'codex は解釈しないので出さない');
+    h.term.feed('/stat');
 
+    assert.ok(h.view().includes('/status'), '候補が出る');
+    assert.ok(h.view().includes('ダッシュボードが答えます'), '本体には渡らないと分かる');
+  });
+
+  test('codex の /status は CLI を呼ばずに答える', async () => {
+    const h = harness('codex');
+    h.term.feed('\r');
+    h.term.feed('/status');
     h.term.feed('\r');
     await settle();
-    assert.equal(h.codex.calls.length, 0, '黙って送らない');
+
+    assert.equal(h.codex.calls.length, 0, 'CLI を呼ばない＝枠を使わない');
+    const view = h.view();
+    assert.ok(view.includes('コンテキスト'), '状態が会話に出る');
+  });
+
+  test('codex の知らないコマンドは黙って送らない', async () => {
+    const h = harness('codex');
+    h.term.feed('\r');
+    h.term.feed('/init');
+    h.term.feed('\r');
+    await settle();
+
+    assert.equal(h.codex.calls.length, 0, '指示文として送ってしまわない');
     assert.ok(h.view().includes('解釈しません'));
   });
 });
@@ -313,5 +335,91 @@ describe('codex では候補を出さない理由を書く', () => {
   test('入力欄は理由に潰されない', () => {
     const rows = conversationScreen('codex', '/st');
     assert.ok(rows.some((r) => r.includes('/st')), '打った文字が見えている');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('ダッシュボードが答えるコマンド', () => {
+  function fakeSession(over: Partial<Session> = {}): Session {
+    return {
+      name: 'codex-1',
+      kind: 'codex',
+      state: 'idle',
+      model: null,
+      agentSessionId: 'thread-1',
+      context: { usedTokens: 40_000, windowTokens: 200_000, ratio: 0.2, estimated: true },
+      stats: {
+        tasksCompleted: 3,
+        tasksFailed: 0,
+        tasksInterrupted: 1,
+        filesEdited: 5,
+        commandsRun: 12,
+        totalTokensIn: 30_000,
+        totalTokensOut: 10_000,
+      },
+      workspace: { actualCwd: '/ws', requestedCwd: '/ws', isolation: 'none', branch: null, sandbox: 'workspace-write' },
+      ...over,
+    } as unknown as Session;
+  }
+
+  test('/status は状態を返す', () => {
+    const r = runLocalCommand('/status', { session: fakeSession() });
+    assert.equal(r.kind, 'answer');
+    assert.match(r.text, /codex-1/);
+    assert.match(r.text, /コンテキスト\s+20%/);
+    assert.match(r.text, /編集 5 ファイル/);
+  });
+
+  test('/status は残量が取れていれば添える', () => {
+    const r = runLocalCommand('/status', {
+      session: fakeSession(),
+      usageLine: '5時間 82% 残',
+    });
+    assert.equal(r.kind, 'answer');
+    assert.match(r.text, /82% 残/);
+  });
+
+  test('/model は引数が無ければ今の値を返す', () => {
+    const r = runLocalCommand('/model', { session: fakeSession() });
+    assert.equal(r.kind, 'answer');
+    assert.match(r.text, /CLI の既定/);
+  });
+
+  test('/model <名前> で切り替える', () => {
+    const r = runLocalCommand('/model gpt-5-codex', { session: fakeSession() });
+    assert.equal(r.kind, 'changed');
+    assert.equal(r.model, 'gpt-5-codex');
+  });
+
+  test('/sandbox は codex の制約を書く', () => {
+    const r = runLocalCommand('/sandbox', { session: fakeSession() });
+    assert.equal(r.kind, 'answer');
+    assert.match(r.text, /workspace-write/);
+    assert.match(r.text, /途中でサンドボックスを変えられません/);
+  });
+
+  test('/compact はアプリ側の操作になる', () => {
+    const r = runLocalCommand('/compact', { session: fakeSession() });
+    assert.deepEqual(r, { kind: 'action', action: 'compact' });
+  });
+
+  test('claude では本体に譲る', () => {
+    // 本体の /compact は本物の圧縮、/status は内部状態。こちらが横取りしない。
+    for (const cmd of ['/status', '/compact', '/model opus']) {
+      const r = runLocalCommand(cmd, { session: fakeSession({ kind: 'claude' }) });
+      assert.equal(r.kind, 'passthrough', cmd);
+    }
+  });
+
+  test('知らないコマンドは渡す', () => {
+    assert.equal(runLocalCommand('/init', { session: fakeSession() }).kind, 'passthrough');
+    assert.equal(runLocalCommand('普通の指示', { session: fakeSession() }).kind, 'passthrough');
+  });
+
+  test('コマンド名と引数を割る', () => {
+    assert.deepEqual(parseCommand('/model gpt-5 codex'), { name: 'model', rest: 'gpt-5 codex' });
+    assert.deepEqual(parseCommand('/status'), { name: 'status', rest: '' });
+    assert.equal(parseCommand('これは違う'), null);
   });
 });

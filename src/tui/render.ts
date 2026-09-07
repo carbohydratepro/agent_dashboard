@@ -12,6 +12,7 @@ import type { Theme } from './theme.ts';
 import { DEFAULT_THEME } from './theme.ts';
 import { drawTable, tableRows } from './views/table.ts';
 import { drawDetail } from './views/detail.ts';
+import type { RecentTurn } from './views/detail.ts';
 import { drawHeader, drawKeyBar, MAIN_HINTS } from './views/chrome.ts';
 import { drawUsage } from './views/usage.ts';
 import { fillRect, textCentered } from './paint.ts';
@@ -30,6 +31,8 @@ export interface MainScreenState {
   theme?: Theme;
   banner?: { text: string; color: number } | null;
   resources?: ResourceSample | null;
+  /** 選択中のセッションの直近のやり取り */
+  turns?: readonly RecentTurn[];
 }
 
 /** 選択中の行にいるセッション。空きなら null。 */
@@ -92,6 +95,7 @@ export function drawMainScreen(screen: Screen, s: MainScreenState): void {
     theme,
     now: s.now,
     expanded: s.expanded,
+    turns: s.turns,
   });
   drawKeyBar(screen, layout.footer, MAIN_HINTS, theme);
 }
