@@ -15,7 +15,7 @@ import { drawMainScreen, sessionAtRow } from './render.ts';
 import { CURSOR_HIDE, CURSOR_SHOW, moveTo } from './ansi.ts';
 import { recentTurns } from './views/detail.ts';
 import { LOCAL_COMMANDS, changeModelText, parseCommand, runLocalCommand } from '../core/local-commands.ts';
-import { readCodexModelInfo } from '../core/models.ts';
+import { modelChoicesFor, readCodexModelInfo } from '../core/models.ts';
 import type { CodexModelInfo } from '../core/models.ts';
 import type { RecentTurn } from './views/detail.ts';
 import { ResourceMonitor } from '../core/resources.ts';
@@ -1372,10 +1372,12 @@ export class App {
       return;
     }
     const current = session.modelOverride ?? session.model ?? info.defaultModel;
-    const at = info.choices.findIndex((c) => c.slug === current);
+    // いま使っているものがキャッシュから消えていることがある。必ず選べるようにする。
+    const choices = modelChoicesFor(info, current);
+    const at = choices.findIndex((c) => c.slug === current);
     this.#modelPick = {
       sessionId: session.id,
-      info,
+      info: { ...info, choices },
       stage: 'model',
       modelIndex: at < 0 ? 0 : at,
       reasoningIndex: 0,

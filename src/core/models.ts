@@ -145,3 +145,38 @@ export function readCodexModelInfo(opts: CodexModelOptions = {}): CodexModelInfo
   info.error = problems.length > 0 ? problems.join(' / ') : null;
   return info;
 }
+
+/**
+ * 選択画面に出す一覧。
+ *
+ * models_cache.json は codex がときどき取り直しており、いま設定しているモデルが
+ * 消えていることがある（実例: config.toml は gpt-6-astra のままなのに、
+ * 取り直したキャッシュからは消えていた）。一覧に出ないと選び直せなくなるので、
+ * 使っているものは必ず先頭に入れる。
+ */
+export function modelChoicesFor(info: CodexModelInfo, current: string | null): ModelChoice[] {
+  if (!current || info.choices.some((c) => c.slug === current)) return info.choices;
+  return [
+    {
+      slug: current,
+      displayName: current,
+      description: '設定にあるが、codex の一覧には無いモデル',
+      // このモデルが何を受け付けるかは分からない。
+      // codex 自身が他のモデルに出している深さを、そのまま候補にする。
+      reasoningLevels: knownReasoningLevels(info),
+      defaultReasoning: null,
+    },
+    ...info.choices,
+  ];
+}
+
+/** キャッシュ内のどれかが受け付けている深さ。並びは codex の出した順。 */
+export function knownReasoningLevels(info: CodexModelInfo): ReasoningLevel[] {
+  const seen = new Map<string, ReasoningLevel>();
+  for (const choice of info.choices) {
+    for (const level of choice.reasoningLevels) {
+      if (!seen.has(level.effort)) seen.set(level.effort, level);
+    }
+  }
+  return [...seen.values()];
+}

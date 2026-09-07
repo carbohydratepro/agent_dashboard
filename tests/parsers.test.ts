@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  modelChoicesFor,
   parseModelsCache,
   readCodexModelInfo,
   readTopLevelString,
@@ -420,5 +421,59 @@ describe('codex のモデル情報', () => {
     assert.equal(info.defaultModel, null);
     assert.deepEqual(info.choices, []);
     assert.match(info.error ?? '', /まだありません/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('一覧から消えたモデル', () => {
+  const info = {
+    defaultModel: 'gpt-6-astra',
+    reasoningEffort: 'high',
+    error: null,
+    choices: [
+      {
+        slug: 'gpt-5.6-sol',
+        displayName: 'Sol',
+        description: '速い',
+        reasoningLevels: [
+          { effort: 'low', description: '軽く' },
+          { effort: 'high', description: 'しっかり' },
+        ],
+        defaultReasoning: 'low',
+      },
+      {
+        slug: 'gpt-5.5',
+        displayName: '5.5',
+        description: '前の世代',
+        reasoningLevels: [{ effort: 'high', description: 'しっかり' }],
+        defaultReasoning: 'high',
+      },
+    ],
+  };
+
+  test('使っているものが消えていても選べる', () => {
+    // codex がキャッシュを取り直すと、設定にあるモデルが消えていることがある。
+    // 一覧に出ないと選び直せなくなる。
+    const list = modelChoicesFor(info, 'gpt-6-astra');
+
+    assert.equal(list[0]!.slug, 'gpt-6-astra', '先頭に入る');
+    assert.equal(list.length, 3);
+    assert.match(list[0]!.description, /一覧には無い/);
+  });
+
+  test('消えたモデルにも深さの候補を出す', () => {
+    // 何を受け付けるかは分からないので、codex が他のモデルに出している深さを使う
+    const astra = modelChoicesFor(info, 'gpt-6-astra')[0]!;
+    assert.deepEqual(
+      astra.reasoningLevels.map((r) => r.effort),
+      ['low', 'high'],
+      '重複させず、codex の出した順',
+    );
+  });
+
+  test('一覧にあるものは足さない', () => {
+    assert.deepEqual(modelChoicesFor(info, 'gpt-5.5'), info.choices);
+    assert.deepEqual(modelChoicesFor(info, null), info.choices);
   });
 });
