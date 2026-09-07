@@ -5,9 +5,17 @@
  * CLI のバージョンが上がってスキーマが変わったら、ここが最初に落ちる。
  */
 
-import { test, describe } from 'node:test';
+import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+  parseModelsCache,
+  readCodexModelInfo,
+  readTopLevelString,
+} from '../src/core/models.ts';
 
 import { ClaudeParser, toolDetail } from '../src/core/drivers/claude-parser.ts';
 import { CodexParser } from '../src/core/drivers/codex-parser.ts';
@@ -330,5 +338,87 @@ describe('CodexParser — 異常系', () => {
     const events = p.finish({ t: 'exit', code: 2, signal: null, stderr: 'error: unexpected argument' });
     assert.ok(events.some((e) => e.t === 'error' && /unexpected argument/.test(e.message)));
     assert.equal(events.find((e) => e.t === 'turn_end')?.ok, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('codex のモデル情報', () => {
+  let dir = '';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'vo-models-'));
+  });
+
+  afterEach(() => {
+    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('config.toml のトップレベルだけを見る', () => {
+    // [notice.model_migrations] のような別のテーブルにも model を含むキーがある
+    const toml = [
+      '# コメント',
+      'model = "gpt-5.6-sol"',
+      'model_reasoning_effort = "xhigh"',
+      '',
+      '[notice.model_migrations]',
+      'model = "これは拾ってはいけない"',
+    ].join('\n');
+
+    assert.equal(readTopLevelString(toml, 'model'), 'gpt-5.6-sol');
+    assert.equal(readTopLevelString(toml, 'model_reasoning_effort'), 'xhigh');
+    assert.equal(readTopLevelString(toml, 'ない'), null);
+  });
+
+  test('隠されているモデルは一覧に出さない', () => {
+    const choices = parseModelsCache({
+      models: [
+        { slug: 'gpt-reserve', visibility: 'hide', priority: 3, display_name: 'GPT-Reserve' },
+        { slug: 'gpt-5.6-sol', visibility: 'list', priority: 6, display_name: 'Sol', description: '速い' },
+        { slug: 'codex-auto-review', visibility: 'hide', priority: 43 },
+      ],
+    });
+
+    assert.deepEqual(choices.map((c) => c.slug), ['gpt-5.6-sol']);
+    assert.equal(choices[0]!.description, '速い');
+  });
+
+  test('codex の並び順に従う', () => {
+    const choices = parseModelsCache({
+      models: [
+        { slug: 'c', visibility: 'list', priority: 23 },
+        { slug: 'a', visibility: 'list', priority: 6 },
+        { slug: 'b', visibility: 'list', priority: 12 },
+      ],
+    });
+    assert.deepEqual(choices.map((c) => c.slug), ['a', 'b', 'c']);
+  });
+
+  test('壊れた入力でも落ちない', () => {
+    assert.deepEqual(parseModelsCache(null), []);
+    assert.deepEqual(parseModelsCache({}), []);
+    assert.deepEqual(parseModelsCache({ models: 'まとも ではない' }), []);
+    assert.deepEqual(parseModelsCache({ models: [null, 42, { visibility: 'list' }] }), []);
+  });
+
+  test('両方のファイルから読む', () => {
+    writeFileSync(join(dir, 'config.toml'), 'model = "gpt-5.5"\nmodel_reasoning_effort = "high"\n');
+    writeFileSync(
+      join(dir, 'models_cache.json'),
+      JSON.stringify({ models: [{ slug: 'gpt-5.5', visibility: 'list', priority: 1 }] }),
+    );
+
+    const info = readCodexModelInfo({ home: dir });
+    assert.equal(info.defaultModel, 'gpt-5.5');
+    assert.equal(info.reasoningEffort, 'high');
+    assert.deepEqual(info.choices.map((c) => c.slug), ['gpt-5.5']);
+    assert.equal(info.error, null);
+  });
+
+  test('ファイルが無くても落ちず、理由を残す', () => {
+    const info = readCodexModelInfo({ home: join(dir, 'ない') });
+    assert.equal(info.defaultModel, null);
+    assert.deepEqual(info.choices, []);
+    assert.match(info.error ?? '', /まだありません/);
   });
 });

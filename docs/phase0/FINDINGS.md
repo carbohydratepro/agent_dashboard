@@ -443,3 +443,31 @@ claude 側（`-p` + `/usage`）が動くのとは対照的（§7）。
 
 そのため会話画面では codex のとき候補を出さない。ただし黙って出さないと
 壊れているように見えるので、`/` を打った時点で理由を 1 行出す。
+
+
+## 10. codex exec resume でモデルを変える（2026-09-07）
+
+`codex exec resume` に `-m` / `--model` は無い。ただし `-c key=value` があり、
+ヘルプ自身が `-c model="o3"` を例に挙げている。これで途中から変えられる。
+
+```
+codex exec resume --json -c model="gpt-5.6-terra" <thread-id> "<prompt>"
+```
+
+オプションは位置引数より前（§1.2 と同じ制約）。
+
+セッションのモデルは 2 つに分けて持つ必要がある。CLI が報告してくる実際の値
+（`session.model`）をそのまま resume に渡すと、指定していないのに最初のターンの
+モデルへ固定されてしまう。こちらから指定したぶんだけ `session.modelOverride`
+に入れ、それだけを渡す。
+
+### モデルの一覧と既定値の出どころ
+
+- `~/.codex/config.toml` のトップレベル `model` / `model_reasoning_effort`
+  （`[notice.model_migrations]` など別テーブルにも `model` があるので、
+  最初の `[section]` より前だけを見ること）
+- `~/.codex/models_cache.json` の `models[]`。`visibility` が `list` のものだけが
+  利用者向けで、`hide` は内部用（gpt-reserve、codex-auto-review など）。
+  並びは `priority` 昇順。
+
+config.toml のほうが新しく、キャッシュに無いモデルが既定になっていることがある。

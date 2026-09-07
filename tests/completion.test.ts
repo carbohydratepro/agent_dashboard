@@ -3,8 +3,11 @@
  * 候補は CLI が返した実物だけを使い、無ければ何も出さない。
  */
 
-import { test, describe } from 'node:test';
+import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   applyCompletion,
@@ -15,6 +18,7 @@ import {
 } from '../src/tui/completion.ts';
 import { parseProbeOutput } from '../src/core/usage.ts';
 import { parseCommand, runLocalCommand } from '../src/core/local-commands.ts';
+import { CodexDriver } from '../src/core/drivers/codex.ts';
 import type { Session } from '../src/core/types.ts';
 import { ConversationState, drawConversation } from '../src/tui/views/conversation.ts';
 import { Screen } from '../src/tui/screen.ts';
@@ -347,6 +351,7 @@ describe('ダッシュボードが答えるコマンド', () => {
       kind: 'codex',
       state: 'idle',
       model: null,
+      modelOverride: null,
       agentSessionId: 'thread-1',
       context: { usedTokens: 40_000, windowTokens: 200_000, ratio: 0.2, estimated: true },
       stats: {
@@ -380,16 +385,72 @@ describe('ダッシュボードが答えるコマンド', () => {
     assert.match(r.text, /82% 残/);
   });
 
-  test('/model は引数が無ければ今の値を返す', () => {
-    const r = runLocalCommand('/model', { session: fakeSession() });
+  const models = {
+    defaultModel: 'gpt-5.6-sol',
+    reasoningEffort: 'xhigh',
+    choices: [
+      { slug: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol', description: '速くて安い' },
+      { slug: 'gpt-5.6-terra', displayName: 'GPT-5.6-Terra', description: 'よく考える' },
+    ],
+    error: null,
+  };
+
+  test('/model は既定の実際の名前を出す', () => {
+    // 「（CLI の既定）」とだけ言われても、何なのか分からず選びようがない
+    const r = runLocalCommand('/model', { session: fakeSession(), models });
     assert.equal(r.kind, 'answer');
-    assert.match(r.text, /CLI の既定/);
+    assert.match(r.text, /gpt-5\.6-sol/);
+    assert.match(r.text, /config\.toml/);
+    assert.match(r.text, /推論の深さ: xhigh/);
+  });
+
+  test('/model は選べるものを並べ、いまのものに印を付ける', () => {
+    const r = runLocalCommand('/model', { session: fakeSession(), models });
+    assert.equal(r.kind, 'answer');
+    assert.match(r.text, /\* gpt-5\.6-sol/, 'いま使っているものが分かる');
+    assert.match(r.text, /  gpt-5\.6-terra/);
+    assert.match(r.text, /よく考える/, '説明も出す');
+  });
+
+  test('セッションで指定していればそちらを出す', () => {
+    const r = runLocalCommand('/model', {
+      session: fakeSession({ modelOverride: 'gpt-5.5' } as never),
+      models,
+    });
+    assert.match(r.kind === 'answer' ? r.text : '', /gpt-5\.5（このセッションで指定）/);
+    assert.match(r.kind === 'answer' ? r.text : '', /既定は gpt-5\.6-sol/);
+  });
+
+  test('CLI が報告した値があればそれを出す', () => {
+    const r = runLocalCommand('/model', {
+      session: fakeSession({ model: 'gpt-5.6-terra' } as never),
+      models,
+    });
+    assert.match(r.kind === 'answer' ? r.text : '', /gpt-5\.6-terra（codex が報告した実際の値）/);
   });
 
   test('/model <名前> で切り替える', () => {
-    const r = runLocalCommand('/model gpt-5-codex', { session: fakeSession() });
+    const r = runLocalCommand('/model gpt-5.6-terra', { session: fakeSession(), models });
     assert.equal(r.kind, 'changed');
-    assert.equal(r.model, 'gpt-5-codex');
+    assert.equal(r.model, 'gpt-5.6-terra');
+    assert.equal(r.text.includes('一覧にありません'), false);
+  });
+
+  test('一覧に無い名前は止めないが知らせる', () => {
+    // 一覧は codex が取ってきたもので、古いことがある
+    const r = runLocalCommand('/model gpt-9', { session: fakeSession(), models });
+    assert.equal(r.kind, 'changed');
+    assert.equal(r.model, 'gpt-9');
+    assert.match(r.text, /一覧にありません/);
+    assert.match(r.text, /gpt-5\.6-sol, gpt-5\.6-terra/);
+  });
+
+  test('一覧が取れなければ理由を出す', () => {
+    const r = runLocalCommand('/model', {
+      session: fakeSession(),
+      models: { defaultModel: null, reasoningEffort: null, choices: [], error: 'まだありません' },
+    });
+    assert.match(r.kind === 'answer' ? r.text : '', /まだありません/);
   });
 
   test('/sandbox は codex の制約を書く', () => {
@@ -421,5 +482,54 @@ describe('ダッシュボードが答えるコマンド', () => {
     assert.deepEqual(parseCommand('/model gpt-5 codex'), { name: 'model', rest: 'gpt-5 codex' });
     assert.deepEqual(parseCommand('/status'), { name: 'status', rest: '' });
     assert.equal(parseCommand('これは違う'), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('モデルの指定が実際に効く', () => {
+  let dir = '';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'vo-codexargs-'));
+  });
+
+  afterEach(() => {
+    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** codex の代わりに、渡された引数をそのまま出すだけのものを起動する */
+  async function argsOf(model: string | null): Promise<string[]> {
+    const bin = join(dir, 'fake-codex');
+    writeFileSync(bin, '#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n', { mode: 0o755 });
+
+    const seen: string[] = [];
+    const driver = new CodexDriver({ bin });
+    for await (const _ of driver.resume('thread-1', {
+      prompt: 'やって',
+      cwd: dir,
+      model,
+      onRawLine: (line) => seen.push(line),
+    })) {
+      void _;
+    }
+    return seen;
+  }
+
+  test('resume は -c でモデルを上書きする', async () => {
+    // resume は -m を受け付けない。渡さないと最初のモデルのまま動き続ける。
+    const args = await argsOf('gpt-5.6-terra');
+
+    assert.ok(args.includes('-c'), args.join(' '));
+    assert.ok(args.includes('model="gpt-5.6-terra"'), args.join(' '));
+    assert.ok(
+      args.indexOf('-c') < args.indexOf('thread-1'),
+      'オプションは位置引数より前（逆にすると落ちる）',
+    );
+  });
+
+  test('指定していなければ何も足さない', async () => {
+    const args = await argsOf(null);
+    assert.deepEqual(args, ['exec', 'resume', '--json', 'thread-1', 'やって']);
   });
 });

@@ -1527,7 +1527,7 @@ export class App {
         return false;
 
       case 'changed':
-        if (result.model !== undefined) session.model = result.model;
+        if (result.model !== undefined) session.modelOverride = result.model;
         echo(result.text);
         return false;
 

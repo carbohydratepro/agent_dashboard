@@ -144,7 +144,14 @@ export interface Session {
   kind: AgentKind;
   /** 一覧での並び順 */
   slot: number;
+  /** CLI が報告してきた、実際に動いているモデル */
   model: string | null;
+  /**
+   * こちらから指定したモデル。/model で変えたときだけ入る。
+   * report された model と分けておかないと、指定していないのに
+   * 最初のターンのモデルへ固定されてしまう。
+   */
+  modelOverride: string | null;
   /** claude のみ。null なら CLI の既定に従う。 */
   permissionMode: string | null;
 

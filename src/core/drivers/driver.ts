@@ -31,6 +31,8 @@ export interface TurnOpts extends CommonOpts {
   allowedTools?: string[];
   /** null なら引数を渡さず CLI の既定に従う（SPEC §1） */
   permissionMode?: string | null;
+  /** 途中でモデルを変えたとき。null なら開始時のまま。 */
+  model?: string | null;
 }
 
 export interface AgentDriver {

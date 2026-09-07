@@ -13,6 +13,8 @@
 
 import type { Session } from './types.ts';
 import { STATE_LABEL_JA } from '../tui/theme.ts';
+import { readCodexModelInfo } from './models.ts';
+import type { CodexModelInfo } from './models.ts';
 import { formatTokens } from '../tui/views/format.ts';
 
 export interface LocalCommand {
@@ -25,7 +27,7 @@ export interface LocalCommand {
 
 export const LOCAL_COMMANDS: LocalCommand[] = [
   { name: 'status', summary: 'このセッションの状態・コンテキスト・使用量' },
-  { name: 'model', summary: '次のターンから使うモデルを変える', argHint: '<名前>' },
+  { name: 'model', summary: 'モデルを見る / 変える', argHint: '[名前]' },
   { name: 'sandbox', summary: 'サンドボックスの設定を見る' },
   { name: 'compact', summary: 'コンテキストを圧縮する' },
   { name: 'help', summary: 'ここで使えるコマンド一覧' },
@@ -59,6 +61,8 @@ export interface LocalCommandContext {
   session: Session;
   /** 使用量の 1 行表示。取れていなければ null。 */
   usageLine?: string | null;
+  /** テスト用にモデル情報を差し替える */
+  models?: CodexModelInfo;
 }
 
 /**
@@ -81,13 +85,12 @@ export function runLocalCommand(input: string, ctx: LocalCommandContext): LocalC
       return { kind: 'answer', text: statusText(session, ctx.usageLine ?? null) };
 
     case 'model': {
-      if (parsed.rest === '') {
-        return { kind: 'answer', text: `いまのモデル: ${session.model ?? '（CLI の既定）'}` };
-      }
+      const info = ctx.models ?? readCodexModelInfo();
+      if (parsed.rest === '') return { kind: 'answer', text: modelText(session, info) };
       return {
         kind: 'changed',
         model: parsed.rest,
-        text: `モデルを ${parsed.rest} にしました。次のターンから使います。`,
+        text: changeModelText(parsed.rest, info),
       };
     }
 
@@ -114,10 +117,70 @@ function statusText(session: Session, usageLine: string | null): string {
     `やり取り  完了 ${st.tasksCompleted}  失敗 ${st.tasksFailed}  中断 ${st.tasksInterrupted}`,
     `作業  編集 ${st.filesEdited} ファイル  コマンド ${st.commandsRun} 回  トークン ${formatTokens(st.totalTokensIn + st.totalTokensOut)}`,
     `作業場所  ${session.workspace.actualCwd}`,
-    `モデル  ${session.model ?? '（CLI の既定）'}`,
+    `モデル  ${session.modelOverride ?? session.model ?? '（CLI の既定）'}`,
   ];
   if (session.agentSessionId) lines.push(`CLI セッション  ${session.agentSessionId}`);
   if (usageLine) lines.push(`残量  ${usageLine}`);
+  return lines.join('\n');
+}
+
+/**
+ * いまのモデルと、選べるもの。
+ *
+ * 「（CLI の既定）」とだけ出しても、それが何なのか分からず選びようがない。
+ * config.toml に書かれている実際の名前と、codex が持っている一覧を出す。
+ */
+function modelText(session: Session, info: CodexModelInfo): string {
+  const lines: string[] = [];
+
+  if (session.modelOverride) {
+    lines.push(`いまのモデル: ${session.modelOverride}（このセッションで指定）`);
+    if (info.defaultModel) lines.push(`  既定は ${info.defaultModel}`);
+  } else if (session.model) {
+    // CLI が報告してきた実物。config.toml より確か。
+    lines.push(`いまのモデル: ${session.model}（codex が報告した実際の値）`);
+  } else if (info.defaultModel) {
+    lines.push(`いまのモデル: ${info.defaultModel}（~/.codex/config.toml の既定）`);
+  } else {
+    lines.push('いまのモデル: codex 本体の既定（config.toml に指定なし）');
+  }
+  if (info.reasoningEffort) lines.push(`  推論の深さ: ${info.reasoningEffort}`);
+
+  if (info.choices.length > 0) {
+    const width = Math.max(...info.choices.map((c) => c.slug.length));
+    lines.push('');
+    lines.push('選べるモデル:');
+    for (const c of info.choices) {
+      const current = session.modelOverride ?? session.model ?? info.defaultModel;
+      const mark = c.slug === current ? '*' : ' ';
+      lines.push(`${mark} ${c.slug.padEnd(width)}  ${c.description || c.displayName}`);
+    }
+    // いま使っているものが一覧に無いことがある。models_cache.json は
+    // codex が取得した時点のもので、config.toml のほうが新しい場合がある。
+    const current = session.modelOverride ?? session.model ?? info.defaultModel;
+    if (current && !info.choices.some((c) => c.slug === current)) {
+      lines.push('');
+      lines.push(`いまの ${current} はこの一覧にありません。一覧が古い可能性があります。`);
+    }
+
+    lines.push('');
+    lines.push('/model <名前> で変えられます（次のターンから）。');
+  } else if (info.error) {
+    lines.push('');
+    lines.push(`選べるモデルの一覧は出せませんでした: ${info.error}`);
+  }
+
+  return lines.join('\n');
+}
+
+function changeModelText(slug: string, info: CodexModelInfo): string {
+  const known = info.choices.some((c) => c.slug === slug);
+  const lines = [`モデルを ${slug} にしました。次のターンから使います。`];
+  if (!known && info.choices.length > 0) {
+    // 一覧は codex が取ってきたもので、古いことがある。止めはしないが知らせる。
+    lines.push(`ただし ${slug} は一覧にありません。名前を間違えていないか確認してください。`);
+    lines.push(`一覧: ${info.choices.map((c) => c.slug).join(', ')}`);
+  }
   return lines.join('\n');
 }
 

@@ -38,7 +38,13 @@ export class CodexDriver implements AgentDriver {
 
   async *resume(sessionId: string, opts: TurnOpts): AsyncIterable<AgentEvent> {
     // ★オプションは位置引数より前★ 逆にすると unexpected argument で落ちる
-    const args = ['exec', 'resume', '--json', sessionId, opts.prompt];
+    const args = ['exec', 'resume', '--json'];
+
+    // resume は -m を受け付けない。設定の上書き（-c）でなら変えられる。
+    // これが無いと、途中でモデルを変えても最初のモデルのまま動き続ける。
+    if (opts.model) args.push('-c', `model="${opts.model}"`);
+
+    args.push(sessionId, opts.prompt);
 
     if (opts.allowedTools && opts.allowedTools.length > 0) {
       // codex には --allowedTools 相当が無い。承認待ちは claude セッションのみの機能。
