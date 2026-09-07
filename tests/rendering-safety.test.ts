@@ -181,6 +181,8 @@ describe('他の画面も崩れない', () => {
       events: [{ t: 'tool_start', name: 'Bash', detail: `a${NL}b`, toolUseId: '1' }],
       summary: null,
       recoveredFrom: null,
+      pid: null,
+      outFile: null,
     };
 
     const screen = new Screen(100, 30, 'none');

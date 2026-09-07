@@ -27,6 +27,7 @@ import type { History } from './analytics.ts';
 import { createHistory } from './analytics.ts';
 import type { DashboardConfig } from './config.ts';
 import { defaultConfig, mergeConfig } from './config.ts';
+import { isAlive } from './drivers/process.ts';
 
 export const SCHEMA_VERSION = 1;
 
@@ -57,6 +58,8 @@ export interface LoadedSession {
   session: Session;
   /** 前回の実行中タスク。起動時に interrupted へ倒す（SPEC §14.3 手順 6） */
   unfinishedPrompt: string | null;
+  /** 切り離した子がまだ走っている。追いかけ直す対象。 */
+  stillRunning: boolean;
 }
 
 export function writeAtomic(path: string, data: string): void {
@@ -96,6 +99,14 @@ export class Persistence {
   }
 
   /** セッションごとの記録（raw.jsonl / tasks.jsonl） */
+  /**
+   * 実行中の子プロセスが出力を書き込むファイル。
+   * ターンごとに上書きするので、大きくなり続けることはない。
+   */
+  runFile(sessionId: string): string {
+    return join(this.logDir(sessionId), 'current.jsonl');
+  }
+
   logDir(sessionId: string): string {
     return join(this.root, 'logs', sessionId);
   }
@@ -199,26 +210,39 @@ export class Persistence {
         continue;
       }
 
+      // 走らせた子がまだ生きていれば、それは中断ではなく続行中。
+      // 子は切り離して起動してあるので、ダッシュボードを閉じても走り続ける。
+      const task = session.currentTask;
+      const stillRunning =
+        task !== null &&
+        task !== undefined &&
+        task.status === 'running' &&
+        typeof task.pid === 'number' &&
+        typeof task.outFile === 'string' &&
+        isAlive(task.pid);
+
       const unfinished =
-        session.currentTask && session.currentTask.status === 'running' ? session.currentTask.prompt : null;
+        task && task.status === 'running' && !stillRunning ? task.prompt : null;
 
       loaded.push({
         session: {
           ...session,
           // 控えは以前 1 件だけの nextPrompt だった。古い保存を拾い直す。
           drafts: session.drafts ?? migrateNextPrompt(session as unknown as LegacySession),
-          // 走っていたプロセスはもう居ない
-          state: session.archived ? 'offline' : 'offline',
+          // 走っていたプロセスはもう居ない。ただし切り離した子が生きていれば別。
+          state: stillRunning ? 'working' : 'offline',
           subagents: [],
-          currentTask: session.currentTask
+          currentTask: task
             ? {
-                ...session.currentTask,
+                ...task,
                 events: [],
-                status: session.currentTask.status === 'running' ? 'interrupted' : session.currentTask.status,
+                status:
+                  task.status === 'running' && !stillRunning ? 'interrupted' : task.status,
               }
             : null,
         },
         unfinishedPrompt: unfinished,
+        stillRunning,
       });
     }
     return { loaded, broken };

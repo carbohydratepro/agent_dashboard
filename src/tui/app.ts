@@ -14,7 +14,9 @@ import { DEFAULT_THEME, STATE_LABEL_JA } from './theme.ts';
 import { drawMainScreen, sessionAtRow } from './render.ts';
 import { CURSOR_HIDE, CURSOR_SHOW, moveTo } from './ansi.ts';
 import { recentTurns } from './views/detail.ts';
-import { LOCAL_COMMANDS, parseCommand, runLocalCommand } from '../core/local-commands.ts';
+import { LOCAL_COMMANDS, changeModelText, parseCommand, runLocalCommand } from '../core/local-commands.ts';
+import { readCodexModelInfo } from '../core/models.ts';
+import type { CodexModelInfo } from '../core/models.ts';
 import type { RecentTurn } from './views/detail.ts';
 import { ResourceMonitor } from '../core/resources.ts';
 import type { ResourceSample } from '../core/resources.ts';
@@ -61,6 +63,7 @@ export type ScreenId =
   | 'approval'
   | 'draft'
   | 'drafts'
+  | 'model'
   | 'hire'
   | 'importSession'
   | 'log'
@@ -167,6 +170,14 @@ export class App {
   #draft: { sessionId: string; input: TextInput; editing: string | null } | null = null;
   /** 控えの一覧で選んでいる位置 */
   #draftIndex = 0;
+  /** モデル選択。stage が 'model' ならモデル、'reasoning' なら推論の深さを選んでいる。 */
+  #modelPick: {
+    sessionId: string;
+    info: CodexModelInfo;
+    stage: 'model' | 'reasoning';
+    modelIndex: number;
+    reasoningIndex: number;
+  } | null = null;
   #hire: HireState | null = null;
   #importSession: ImportState | null = null;
   #approvalIndex = 0;
@@ -372,6 +383,11 @@ export class App {
         this.#drawDrafts();
         return;
 
+      case 'model':
+        this.#drawMainBeneath();
+        this.#drawModelPick();
+        return;
+
       case 'hire':
         this.#drawMainBeneath();
         this.#drawHire();
@@ -563,6 +579,9 @@ export class App {
       case 'drafts':
         this.#draftsKey(k);
         break;
+      case 'model':
+        this.#modelKey(k);
+        break;
       case 'hire':
         this.#hireKey(k);
         break;
@@ -724,6 +743,78 @@ export class App {
       fg: theme.textDim,
       bg: theme.panelBg,
     });
+  }
+
+  /** モデルの選択画面。 */
+  #drawModelPick(): void {
+    const pick = this.#modelPick;
+    const session = pick ? this.store.find(pick.sessionId) : null;
+    if (!pick || !session) {
+      this.screenId = 'conversation';
+      return;
+    }
+    const theme = this.theme;
+    const model = pick.info.choices[pick.modelIndex]!;
+    const choosingModel = pick.stage === 'model';
+    const rows = choosingModel ? pick.info.choices.length : model.reasoningLevels.length;
+
+    const w = Math.min(88, this.screen.width - 8);
+    const h = Math.min(this.screen.height - 4, rows + 7);
+    const x = Math.floor((this.screen.width - w) / 2);
+    const y = Math.floor((this.screen.height - h) / 2);
+
+    drawBox(this.screen, x, y, w, h, {
+      style: { fg: theme.accent, bg: theme.panelBg },
+      title: choosingModel ? `モデル — ${session.name}` : `推論の深さ — ${model.slug}`,
+      titleStyle: { fg: theme.accent, bg: theme.panelBg, bold: true },
+      fill: theme.panelBg,
+    });
+
+    const current = session.modelOverride ?? session.model ?? pick.info.defaultModel;
+    textClipped(
+      this.screen,
+      x + 2,
+      y + 1,
+      w - 4,
+      choosingModel
+        ? `いま: ${current ?? '（既定）'}   * が現在の設定`
+        : `${model.description || model.displayName}`,
+      { fg: theme.textDim, bg: theme.panelBg },
+    );
+
+    const nowEffort = session.reasoningOverride ?? pick.info.reasoningEffort;
+    for (let i = 0; i < rows && y + 3 + i < y + h - 2; i += 1) {
+      const selected = i === (choosingModel ? pick.modelIndex : pick.reasoningIndex);
+      const bg = selected ? theme.rowAlt : theme.panelBg;
+      const top = y + 3 + i;
+      fillRect(this.screen, x + 1, top, w - 2, 1, bg);
+
+      const slug = choosingModel ? pick.info.choices[i]!.slug : model.reasoningLevels[i]!.effort;
+      const desc = choosingModel
+        ? pick.info.choices[i]!.description || pick.info.choices[i]!.displayName
+        : model.reasoningLevels[i]!.description;
+      const isCurrent = choosingModel ? slug === current : slug === nowEffort;
+
+      this.screen.text(x + 2, top, selected ? '▸' : ' ', { fg: theme.accent, bg, bold: true });
+      this.screen.text(x + 4, top, isCurrent ? '*' : ' ', { fg: theme.gauge.good, bg, bold: true });
+      this.screen.text(x + 6, top, padEnd(slug, 16), {
+        fg: selected ? theme.textBright : theme.text,
+        bg,
+        bold: selected,
+      });
+      textClipped(this.screen, x + 23, top, w - 25, desc, { fg: theme.textDim, bg });
+    }
+
+    textCentered(
+      this.screen,
+      x + 1,
+      y + h - 2,
+      w - 2,
+      choosingModel && model.reasoningLevels.length > 0
+        ? '[↑↓] 選ぶ   [Enter] 深さも選ぶ   [Tab] これで決める   [Esc] やめる'
+        : '[↑↓] 選ぶ   [Enter] 決める   [Esc] 戻る',
+      { fg: theme.textDim, bg: theme.panelBg },
+    );
   }
 
   /** 控えの一覧。選んで送る。 */
@@ -1273,6 +1364,88 @@ export class App {
     this.#openScreen('draft');
   }
 
+  /** モデルの選択画面。名前を覚えていなくても選べるように。 */
+  #openModelPick(session: Session): void {
+    const info = readCodexModelInfo();
+    if (info.choices.length === 0) {
+      this.#notify(info.error ?? 'モデルの一覧が取れませんでした', this.theme.gauge.high);
+      return;
+    }
+    const current = session.modelOverride ?? session.model ?? info.defaultModel;
+    const at = info.choices.findIndex((c) => c.slug === current);
+    this.#modelPick = {
+      sessionId: session.id,
+      info,
+      stage: 'model',
+      modelIndex: at < 0 ? 0 : at,
+      reasoningIndex: 0,
+    };
+    this.#openScreen('model');
+  }
+
+  #modelKey(k: Key): void {
+    const pick = this.#modelPick;
+    const session = pick ? this.store.find(pick.sessionId) : null;
+    if (!pick || !session) {
+      this.#openScreen('conversation');
+      return;
+    }
+    const model = pick.info.choices[pick.modelIndex]!;
+    const levels = model.reasoningLevels;
+    const list = pick.stage === 'model' ? pick.info.choices : levels;
+    const indexKey = pick.stage === 'model' ? 'modelIndex' : 'reasoningIndex';
+
+    if (k.name === 'escape') {
+      // 深さを選んでいる途中なら、モデルの選択に戻る
+      if (pick.stage === 'reasoning') {
+        pick.stage = 'model';
+        return;
+      }
+      this.#modelPick = null;
+      this.#openScreen('conversation');
+      return;
+    }
+    if (k.name === 'down' || (k.name === 'char' && k.ch === 'j')) {
+      pick[indexKey] = Math.min(list.length - 1, pick[indexKey] + 1);
+      return;
+    }
+    if (k.name === 'up' || (k.name === 'char' && k.ch === 'k')) {
+      pick[indexKey] = Math.max(0, pick[indexKey] - 1);
+      return;
+    }
+    if (k.name === 'enter') {
+      if (pick.stage === 'model' && levels.length > 0) {
+        // 深さを選べるモデルなら、続けて選ばせる
+        const now = session.reasoningOverride ?? pick.info.reasoningEffort;
+        const at = levels.findIndex((r) => r.effort === now);
+        pick.reasoningIndex = at < 0 ? Math.max(0, levels.findIndex((r) => r.effort === model.defaultReasoning)) : at;
+        pick.stage = 'reasoning';
+        return;
+      }
+      this.#applyModelPick(session, model.slug, levels[pick.reasoningIndex]?.effort ?? null);
+      return;
+    }
+    // 深さは選ばずモデルだけ決めたいとき
+    if (k.name === 'tab' && pick.stage === 'model') {
+      this.#applyModelPick(session, model.slug, null);
+      return;
+    }
+  }
+
+  #applyModelPick(session: Session, slug: string, effort: string | null): void {
+    session.modelOverride = slug;
+    session.reasoningOverride = effort;
+    const info = this.#modelPick?.info;
+    this.#modelPick = null;
+
+    const conv = this.#conversationFor(session.id);
+    for (const line of changeModelText(slug, effort, info ?? readCodexModelInfo()).split('\n')) {
+      conv.pushSystem(line);
+    }
+    conv.scrollToBottom();
+    this.#openScreen('conversation');
+  }
+
   /** 控えの一覧。選んで送る／直す／消す。 */
   #openDrafts(): void {
     const session = this.selectedSession;
@@ -1528,12 +1701,14 @@ export class App {
 
       case 'changed':
         if (result.model !== undefined) session.modelOverride = result.model;
+        if (result.reasoning !== undefined) session.reasoningOverride = result.reasoning;
         echo(result.text);
         return false;
 
       case 'action':
         conv.pushUser(text);
-        this.#compact();
+        if (result.action === 'compact') this.#compact();
+        else this.#openModelPick(session);
         return false;
 
       case 'passthrough':

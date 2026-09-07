@@ -111,6 +111,8 @@ describe('履歴の組み立て', () => {
       ],
       summary: null,
       recoveredFrom: null,
+      pid: null,
+      outFile: null,
     });
     assert.deepEqual(conv.entries.map((e) => e.t), ['user', 'tool', 'assistant']);
   });
@@ -530,6 +532,8 @@ describe('過去の会話を遡る', () => {
           events: [],
           summary: '前回の返事です。',
           recoveredFrom: null,
+      pid: null,
+      outFile: null,
         },
       ],
     });

@@ -6,10 +6,10 @@
  *   ・`resume` は --sandbox を受け付けない。初回セッションの設定を継承する
  */
 
-import type { AgentDriver, StartOpts, TurnOpts } from './driver.ts';
+import type { AgentDriver, AttachOpts, StartOpts, TurnOpts } from './driver.ts';
 import type { AgentEvent } from '../types.ts';
 import { CodexParser } from './codex-parser.ts';
-import { runProcess } from './process.ts';
+import { attachProcess, runProcess } from './process.ts';
 
 export interface CodexDriverOptions {
   bin?: string;
@@ -30,6 +30,7 @@ export class CodexDriver implements AgentDriver {
   async *start(opts: StartOpts): AsyncIterable<AgentEvent> {
     const args = ['exec', opts.prompt, '--json'];
     if (opts.model) args.push('-m', opts.model);
+    if (opts.reasoning) args.push('-c', `model_reasoning_effort="${opts.reasoning}"`);
     // サンドボックスはここでしか指定できない。以後このセッションの生涯にわたり固定される
     if (opts.sandbox) args.push('--sandbox', opts.sandbox);
 
@@ -43,6 +44,7 @@ export class CodexDriver implements AgentDriver {
     // resume は -m を受け付けない。設定の上書き（-c）でなら変えられる。
     // これが無いと、途中でモデルを変えても最初のモデルのまま動き続ける。
     if (opts.model) args.push('-c', `model="${opts.model}"`);
+    if (opts.reasoning) args.push('-c', `model_reasoning_effort="${opts.reasoning}"`);
 
     args.push(sessionId, opts.prompt);
 
@@ -54,6 +56,25 @@ export class CodexDriver implements AgentDriver {
     yield* this.#run(args, opts);
   }
 
+  /** 走ったままのものを追いかける。出力はファイルに残っている。 */
+  async *attach(opts: AttachOpts): AsyncIterable<AgentEvent> {
+    const parser = new CodexParser({
+      prevInputTokens: opts.prevInputTokens,
+      prevOutputTokens: opts.prevOutputTokens,
+      model: opts.model ?? '',
+    });
+    for await (const e of attachProcess({
+      pid: opts.pid,
+      outFile: opts.outFile,
+      signal: opts.signal,
+      killGraceMs: this.#killGraceMs,
+      onRawLine: opts.onRawLine,
+    })) {
+      if (e.t === 'line') yield* parser.push(e.line);
+      else yield* parser.finish(e);
+    }
+  }
+
   async *#run(
     args: string[],
     opts: {
@@ -63,6 +84,8 @@ export class CodexDriver implements AgentDriver {
       prevInputTokens?: number;
       prevOutputTokens?: number;
       model?: string | null;
+      outFile?: string;
+      onStarted?: (info: { pid: number; outFile: string }) => void;
     },
   ): AsyncIterable<AgentEvent> {
     const parser = new CodexParser({
@@ -78,6 +101,8 @@ export class CodexDriver implements AgentDriver {
       signal: opts.signal,
       killGraceMs: this.#killGraceMs,
       onRawLine: opts.onRawLine,
+      outFile: opts.outFile,
+      onStarted: opts.onStarted,
     })) {
       if (e.t === 'line') yield* parser.push(e.line);
       else yield* parser.finish(e);

@@ -33,13 +33,15 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
   { name: 'help', summary: 'ここで使えるコマンド一覧' },
 ];
 
+export type LocalCommandAction = 'compact' | 'model';
+
 export type LocalCommandResult =
   /** ここで完結した。text を会話に出す。 */
   | { kind: 'answer'; text: string }
   /** 設定を変えた。text を会話に出す。 */
-  | { kind: 'changed'; text: string; model?: string | null }
-  /** 圧縮など、アプリ側の操作を起こす */
-  | { kind: 'action'; action: 'compact' }
+  | { kind: 'changed'; text: string; model?: string | null; reasoning?: string | null }
+  /** 圧縮や選択画面など、アプリ側の操作を起こす */
+  | { kind: 'action'; action: LocalCommandAction }
   /** ここでは扱わない。CLI へそのまま渡す。 */
   | { kind: 'passthrough' };
 
@@ -86,11 +88,16 @@ export function runLocalCommand(input: string, ctx: LocalCommandContext): LocalC
 
     case 'model': {
       const info = ctx.models ?? readCodexModelInfo();
-      if (parsed.rest === '') return { kind: 'answer', text: modelText(session, info) };
+      // 引数なしなら選択画面。名前を覚えていなくても選べるように。
+      if (parsed.rest === '') return { kind: 'action', action: 'model' };
+
+      // `/model <名前> <深さ>` の 2 語目は推論の深さ
+      const [slug, effort] = parsed.rest.split(/\s+/);
       return {
         kind: 'changed',
-        model: parsed.rest,
-        text: changeModelText(parsed.rest, info),
+        model: slug ?? null,
+        reasoning: effort ?? null,
+        text: changeModelText(slug ?? '', effort ?? null, info),
       };
     }
 
@@ -124,62 +131,29 @@ function statusText(session: Session, usageLine: string | null): string {
   return lines.join('\n');
 }
 
-/**
- * いまのモデルと、選べるもの。
- *
- * 「（CLI の既定）」とだけ出しても、それが何なのか分からず選びようがない。
- * config.toml に書かれている実際の名前と、codex が持っている一覧を出す。
- */
-function modelText(session: Session, info: CodexModelInfo): string {
-  const lines: string[] = [];
+export function changeModelText(
+  slug: string,
+  effort: string | null,
+  info: CodexModelInfo,
+): string {
+  const lines = [
+    effort
+      ? `モデルを ${slug}（推論 ${effort}）にしました。次のターンから使います。`
+      : `モデルを ${slug} にしました。次のターンから使います。`,
+  ];
 
-  if (session.modelOverride) {
-    lines.push(`いまのモデル: ${session.modelOverride}（このセッションで指定）`);
-    if (info.defaultModel) lines.push(`  既定は ${info.defaultModel}`);
-  } else if (session.model) {
-    // CLI が報告してきた実物。config.toml より確か。
-    lines.push(`いまのモデル: ${session.model}（codex が報告した実際の値）`);
-  } else if (info.defaultModel) {
-    lines.push(`いまのモデル: ${info.defaultModel}（~/.codex/config.toml の既定）`);
-  } else {
-    lines.push('いまのモデル: codex 本体の既定（config.toml に指定なし）');
-  }
-  if (info.reasoningEffort) lines.push(`  推論の深さ: ${info.reasoningEffort}`);
-
-  if (info.choices.length > 0) {
-    const width = Math.max(...info.choices.map((c) => c.slug.length));
-    lines.push('');
-    lines.push('選べるモデル:');
-    for (const c of info.choices) {
-      const current = session.modelOverride ?? session.model ?? info.defaultModel;
-      const mark = c.slug === current ? '*' : ' ';
-      lines.push(`${mark} ${c.slug.padEnd(width)}  ${c.description || c.displayName}`);
-    }
-    // いま使っているものが一覧に無いことがある。models_cache.json は
-    // codex が取得した時点のもので、config.toml のほうが新しい場合がある。
-    const current = session.modelOverride ?? session.model ?? info.defaultModel;
-    if (current && !info.choices.some((c) => c.slug === current)) {
-      lines.push('');
-      lines.push(`いまの ${current} はこの一覧にありません。一覧が古い可能性があります。`);
-    }
-
-    lines.push('');
-    lines.push('/model <名前> で変えられます（次のターンから）。');
-  } else if (info.error) {
-    lines.push('');
-    lines.push(`選べるモデルの一覧は出せませんでした: ${info.error}`);
-  }
-
-  return lines.join('\n');
-}
-
-function changeModelText(slug: string, info: CodexModelInfo): string {
-  const known = info.choices.some((c) => c.slug === slug);
-  const lines = [`モデルを ${slug} にしました。次のターンから使います。`];
-  if (!known && info.choices.length > 0) {
+  const choice = info.choices.find((c) => c.slug === slug);
+  if (!choice && info.choices.length > 0) {
     // 一覧は codex が取ってきたもので、古いことがある。止めはしないが知らせる。
     lines.push(`ただし ${slug} は一覧にありません。名前を間違えていないか確認してください。`);
     lines.push(`一覧: ${info.choices.map((c) => c.slug).join(', ')}`);
+  }
+  if (effort && choice && choice.reasoningLevels.length > 0) {
+    if (!choice.reasoningLevels.some((r) => r.effort === effort)) {
+      lines.push(
+        `${slug} が受け付ける推論の深さ: ${choice.reasoningLevels.map((r) => r.effort).join(', ')}`,
+      );
+    }
   }
   return lines.join('\n');
 }

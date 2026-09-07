@@ -13,6 +13,7 @@ import { SessionManager } from '../src/core/session-manager.ts';
 import { StateStore, createDashboard } from '../src/core/store.ts';
 import { attachAutosave } from '../src/core/autosave.ts';
 import { MockDriver, successfulTurn, deniedTurn } from '../src/core/drivers/mock.ts';
+import { ClaudeDriver } from '../src/core/drivers/claude.ts';
 import { SeqIdGen } from '../src/core/clock.ts';
 
 let root = '';
@@ -225,6 +226,8 @@ describe('タスク履歴と生ログ', () => {
     p.appendTask('e1', {
       id: 't1', sessionId: 'e1', prompt: 'ok', startedAt: 0, endedAt: 1,
       status: 'done', events: [], summary: null, recoveredFrom: null,
+      pid: null,
+      outFile: null,
     });
     writeFileSync(join(p.logDir('e1'), 'tasks.jsonl'), readFileSync(join(p.logDir('e1'), 'tasks.jsonl'), 'utf8') + '壊れた行\n');
     assert.equal(p.loadTasks('e1').length, 1);
@@ -291,6 +294,8 @@ describe('起動シーケンス（SPEC §14.3）', () => {
     emp.currentTask = {
       id: 'task-9', sessionId: emp.id, prompt: '途中だった指示', startedAt: 0,
       endedAt: null, status: 'running', events: [], summary: null, recoveredFrom: null,
+      pid: null,
+      outFile: null,
     };
     a.persistence.saveSession(emp);
 
@@ -313,6 +318,8 @@ describe('起動シーケンス（SPEC §14.3）', () => {
     emp.currentTask = {
       id: 'task-9', sessionId: emp.id, prompt: '途中だった指示', startedAt: 0,
       endedAt: null, status: 'running', events: [], summary: null, recoveredFrom: null,
+      pid: null,
+      outFile: null,
     };
     a.persistence.saveSession(emp);
 
@@ -487,5 +494,112 @@ describe('旧名の保存先からの引っ越し', () => {
       if (saved.vo === undefined) delete process.env.VO_HOME;
       else process.env.VO_HOME = saved.vo;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('立ち上げ直しても作業は続く', () => {
+  /** ゆっくり働いて最後に結果を返す、claude の代わり */
+  function fakeClaude(root: string, lines = 8, intervalMs = 120): string {
+    const path = join(root, 'fake-claude');
+    writeFileSync(
+      path,
+      `#!/usr/bin/env node
+const id = "sess-1";
+process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: id, tools: [], slash_commands: [] }) + "\\n");
+let n = 0;
+const t = setInterval(() => {
+  n++;
+  process.stdout.write(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "作業 " + n + " " }] } }) + "\\n");
+  if (n >= ${lines}) {
+    clearInterval(t);
+    process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "終わりました", usage: { input_tokens: 10, output_tokens: 5 }, permission_denials: [] }) + "\\n");
+    process.exit(0);
+  }
+}, ${intervalMs});`,
+      { mode: 0o755 },
+    );
+    return path;
+  }
+
+  test('走ったままのターンを追いかけ直す', async () => {
+    const bin = fakeClaude(root);
+
+    // 1 回目。走らせて、終わる前に落とす。
+    const a = await bootstrap({
+      root,
+      cwd: root,
+      skipVersionCheck: true,
+      drivers: { claude: new ClaudeDriver({ bin }) },
+    });
+    const session = a.manager.createSession({ kind: 'claude', name: 'claude-1', cwd: root });
+    void a.manager.dispatch(session.id, '長めの作業をして');
+    await new Promise((r) => setTimeout(r, 400));
+
+    const pid = session.currentTask?.pid;
+    assert.ok(pid && pid > 0, '子の PID を控えている');
+    a.persistence.saveSession(session);
+    a.detachAutosave();
+
+    // 2 回目。中断ではなく続行中として戻る。
+    const b = await bootstrap({
+      root,
+      cwd: root,
+      skipVersionCheck: true,
+      drivers: { claude: new ClaudeDriver({ bin }) },
+    });
+    const restored = b.store.active()[0]!;
+
+    assert.equal(restored.currentTask?.status, 'running', '中断扱いにしない');
+    assert.equal(restored.drafts.length, 0, '指示を控えに戻さない（再送信させない）');
+    assert.ok(
+      b.warnings.some((w) => w.includes('続けています')),
+      '続いていることを知らせる',
+    );
+
+    // 放っておけば向こうで終わり、結果もこちらに入る
+    await new Promise((r) => setTimeout(r, 1600));
+    assert.equal(restored.currentTask?.status, 'done');
+    assert.equal(restored.currentTask?.summary, '終わりました');
+    assert.equal(restored.stats.tasksCompleted, 1);
+    b.detachAutosave();
+  });
+
+  test('子が死んでいれば従来どおり中断扱い', async () => {
+    const a = await bootstrap({
+      root,
+      cwd: root,
+      skipVersionCheck: true,
+      drivers: { claude: new MockDriver({ kind: 'claude' }) },
+    });
+    const session = a.manager.createSession({ kind: 'claude', name: 'claude-1', cwd: root });
+    session.currentTask = {
+      id: 'task-9',
+      sessionId: session.id,
+      prompt: '途中だった指示',
+      startedAt: 0,
+      endedAt: null,
+      status: 'running',
+      events: [],
+      summary: null,
+      recoveredFrom: null,
+      pid: 999_999, // 居ない
+      outFile: join(root, 'ない.jsonl'),
+    };
+    a.persistence.saveSession(session);
+    a.detachAutosave();
+
+    const b = await bootstrap({
+      root,
+      cwd: root,
+      skipVersionCheck: true,
+      drivers: { claude: new MockDriver({ kind: 'claude' }) },
+    });
+    const restored = b.store.active()[0]!;
+
+    assert.equal(restored.currentTask?.status, 'interrupted');
+    assert.deepEqual(restored.drafts.map((d) => d.text), ['途中だった指示']);
+    b.detachAutosave();
   });
 });

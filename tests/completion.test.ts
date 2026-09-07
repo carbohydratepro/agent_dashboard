@@ -389,44 +389,31 @@ describe('ダッシュボードが答えるコマンド', () => {
     defaultModel: 'gpt-5.6-sol',
     reasoningEffort: 'xhigh',
     choices: [
-      { slug: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol', description: '速くて安い' },
-      { slug: 'gpt-5.6-terra', displayName: 'GPT-5.6-Terra', description: 'よく考える' },
+      {
+        slug: 'gpt-5.6-sol',
+        displayName: 'GPT-5.6-Sol',
+        description: '速くて安い',
+        reasoningLevels: [
+          { effort: 'low', description: '軽く' },
+          { effort: 'high', description: 'しっかり' },
+        ],
+        defaultReasoning: 'low',
+      },
+      {
+        slug: 'gpt-5.6-terra',
+        displayName: 'GPT-5.6-Terra',
+        description: 'よく考える',
+        reasoningLevels: [],
+        defaultReasoning: null,
+      },
     ],
     error: null,
   };
 
-  test('/model は既定の実際の名前を出す', () => {
-    // 「（CLI の既定）」とだけ言われても、何なのか分からず選びようがない
+  test('/model だけなら選択画面を開く', () => {
+    // 名前を覚えていないと打てないのでは選びようがない
     const r = runLocalCommand('/model', { session: fakeSession(), models });
-    assert.equal(r.kind, 'answer');
-    assert.match(r.text, /gpt-5\.6-sol/);
-    assert.match(r.text, /config\.toml/);
-    assert.match(r.text, /推論の深さ: xhigh/);
-  });
-
-  test('/model は選べるものを並べ、いまのものに印を付ける', () => {
-    const r = runLocalCommand('/model', { session: fakeSession(), models });
-    assert.equal(r.kind, 'answer');
-    assert.match(r.text, /\* gpt-5\.6-sol/, 'いま使っているものが分かる');
-    assert.match(r.text, /  gpt-5\.6-terra/);
-    assert.match(r.text, /よく考える/, '説明も出す');
-  });
-
-  test('セッションで指定していればそちらを出す', () => {
-    const r = runLocalCommand('/model', {
-      session: fakeSession({ modelOverride: 'gpt-5.5' } as never),
-      models,
-    });
-    assert.match(r.kind === 'answer' ? r.text : '', /gpt-5\.5（このセッションで指定）/);
-    assert.match(r.kind === 'answer' ? r.text : '', /既定は gpt-5\.6-sol/);
-  });
-
-  test('CLI が報告した値があればそれを出す', () => {
-    const r = runLocalCommand('/model', {
-      session: fakeSession({ model: 'gpt-5.6-terra' } as never),
-      models,
-    });
-    assert.match(r.kind === 'answer' ? r.text : '', /gpt-5\.6-terra（codex が報告した実際の値）/);
+    assert.deepEqual(r, { kind: 'action', action: 'model' });
   });
 
   test('/model <名前> で切り替える', () => {
@@ -436,6 +423,20 @@ describe('ダッシュボードが答えるコマンド', () => {
     assert.equal(r.text.includes('一覧にありません'), false);
   });
 
+  test('/model <名前> <深さ> で推論の深さも指定できる', () => {
+    const r = runLocalCommand('/model gpt-5.6-sol high', { session: fakeSession(), models });
+    assert.equal(r.kind, 'changed');
+    assert.equal(r.model, 'gpt-5.6-sol');
+    assert.equal(r.reasoning, 'high');
+    assert.match(r.text, /推論 high/);
+  });
+
+  test('受け付けない深さは知らせる', () => {
+    const r = runLocalCommand('/model gpt-5.6-sol ばか高い', { session: fakeSession(), models });
+    assert.equal(r.kind, 'changed');
+    assert.match(r.text, /受け付ける推論の深さ: low, high/);
+  });
+
   test('一覧に無い名前は止めないが知らせる', () => {
     // 一覧は codex が取ってきたもので、古いことがある
     const r = runLocalCommand('/model gpt-9', { session: fakeSession(), models });
@@ -443,14 +444,6 @@ describe('ダッシュボードが答えるコマンド', () => {
     assert.equal(r.model, 'gpt-9');
     assert.match(r.text, /一覧にありません/);
     assert.match(r.text, /gpt-5\.6-sol, gpt-5\.6-terra/);
-  });
-
-  test('一覧が取れなければ理由を出す', () => {
-    const r = runLocalCommand('/model', {
-      session: fakeSession(),
-      models: { defaultModel: null, reasoningEffort: null, choices: [], error: 'まだありません' },
-    });
-    assert.match(r.kind === 'answer' ? r.text : '', /まだありません/);
   });
 
   test('/sandbox は codex の制約を書く', () => {

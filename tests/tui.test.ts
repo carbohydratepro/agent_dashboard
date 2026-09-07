@@ -448,6 +448,8 @@ describe('いま何をしているか', () => {
       ],
       summary: null,
       recoveredFrom: null,
+      pid: null,
+      outFile: null,
     };
 
     const a = activityText(session);
@@ -469,6 +471,8 @@ describe('いま何をしているか', () => {
       events: [],
       summary: null,
       recoveredFrom: null,
+      pid: null,
+      outFile: null,
     };
 
     assert.deepEqual(activityText(session), { text: 'テストを直して', busy: true });
@@ -489,6 +493,8 @@ describe('いま何をしているか', () => {
       events: [{ t: 'tool_start', name: 'Bash', detail: 'npm run check', toolUseId: '1' }],
       summary: null,
       recoveredFrom: null,
+      pid: null,
+      outFile: null,
     };
 
     const screen = new Screen(140, 30, 'none');

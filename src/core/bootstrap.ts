@@ -143,6 +143,7 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
     store,
     drivers,
     locks,
+    runFile: (id) => persistence.runFile(id),
     config: {
       contextWindow: config.defaults.claude.contextWindow,
       contextRestThreshold: config.thresholds.contextRest,
@@ -156,7 +157,9 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
   const { loaded, broken } = persistence.loadSessions();
   if (broken.length > 0) warnings.push(`読めなかったセッションファイル: ${broken.join(', ')}`);
 
-  for (const { session, unfinishedPrompt } of loaded) {
+  const stillRunning: string[] = [];
+  for (const { session, unfinishedPrompt, stillRunning: running } of loaded) {
+    if (running) stillRunning.push(session.id);
     // 4. worktree の実在確認
     const check = workspace.verify(session.workspace);
     if (!check.ok && check.repaired) {
@@ -175,6 +178,15 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
     }
   }
   warnings.push(...manager.loadSessions(loaded.map((l) => l.session)));
+
+  // 走ったままのターンを追いかけ直す。待たない（画面を先に出す）。
+  for (const id of stillRunning) {
+    const session = store.find(id);
+    warnings.push(`${session?.name ?? id} は前回の作業を続けています。`);
+    void manager.attachRunningTask(id).catch(() => {
+      // 追いかけ直せなくても致命的ではない。状態は次のイベントで整う。
+    });
+  }
 
   // 7. ネットワーク監視
   const monitor = new NetworkMonitor({

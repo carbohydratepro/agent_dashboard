@@ -70,6 +70,8 @@ export function sampleDashboard(): Dashboard {
     ],
     summary: null,
     recoveredFrom: null,
+      pid: null,
+      outFile: null,
   };
 
   b.subagents = [

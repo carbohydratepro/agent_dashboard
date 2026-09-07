@@ -97,6 +97,13 @@ export interface Task {
   events: AgentEvent[];
   summary: string | null;
   recoveredFrom: string | null;
+  /**
+   * 走らせた子プロセス。ダッシュボードを立ち上げ直したとき、
+   * まだ生きていれば追いかけ直すために控えておく。
+   */
+  pid: number | null;
+  /** その子が出力を書いているファイル */
+  outFile: string | null;
 }
 
 export interface ContextInfo {
@@ -152,6 +159,8 @@ export interface Session {
    * 最初のターンのモデルへ固定されてしまう。
    */
   modelOverride: string | null;
+  /** こちらから指定した推論の深さ。codex のみ。null なら config.toml のまま。 */
+  reasoningOverride: string | null;
   /** claude のみ。null なら CLI の既定に従う。 */
   permissionMode: string | null;
 

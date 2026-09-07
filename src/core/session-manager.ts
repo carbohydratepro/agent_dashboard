@@ -26,6 +26,7 @@ import { systemClock, systemIdGen } from './clock.ts';
 import { StateStore } from './store.ts';
 import { createStats } from './stats.ts';
 import { colorForSlot, nextName } from './naming.ts';
+import { isAlive } from './drivers/process.ts';
 
 /**
  * 1 タスクぶんに残す出来事の数。
@@ -71,6 +72,12 @@ export interface SessionManagerDeps {
   locks?: LockManager;
   /** CLI の生出力を受け取るフック。raw.jsonl への追記に使う（SPEC §14.2） */
   onRawLine?: (sessionId: string, line: string) => void;
+  /**
+   * 子プロセスの出力を書き出す先。渡すと子を切り離して起動するので、
+   * ダッシュボードを閉じても作業が続き、立ち上げ直せば追いかけ直せる。
+   * 渡さなければ従来どおり親と運命を共にする（テスト用）。
+   */
+  runFile?: (sessionId: string) => string;
 }
 
 export interface CreateOpts {
@@ -107,6 +114,8 @@ export interface DispatchOpts {
    * 指示を送るときだけ使う（SPEC §10.3）。ユーザーの操作からは使わない。
    */
   force?: boolean;
+  /** 走ったままのターンを追いかけ直すとき。新しいタスクを作らずこれを使う。 */
+  attach?: Task;
 }
 
 /** 取り込んだ会話の実績を集計に乗せる。ログの実数なので水増ししない。 */
@@ -136,6 +145,7 @@ export class SessionManager {
   #drivers: Partial<Record<AgentKind, AgentDriver>>;
   #clock: Clock;
   #ids: IdGen;
+  #runFile: ((sessionId: string) => string) | undefined;
   #config: ManagerConfig;
   #locks: LockManager | undefined;
   #onRawLine: ((sessionId: string, line: string) => void) | undefined;
@@ -150,6 +160,7 @@ export class SessionManager {
     this.#drivers = deps.drivers;
     this.#clock = deps.clock ?? systemClock;
     this.#ids = deps.ids ?? systemIdGen;
+    this.#runFile = deps.runFile;
     this.#config = { ...DEFAULT_CONFIG, ...deps.config };
     this.#locks = deps.locks;
     this.#onRawLine = deps.onRawLine;
@@ -182,6 +193,7 @@ export class SessionManager {
       slot,
       model: opts.model ?? null,
       modelOverride: opts.model ?? null,
+      reasoningOverride: null,
       permissionMode: opts.permissionMode ?? null,
       name: opts.name ?? nextName(opts.kind, this.store.usedNames()),
       color: colorForSlot(slot),
@@ -401,6 +413,11 @@ export class SessionManager {
   // 中断（SPEC §8.3 / §10.3）
   // -------------------------------------------------------------------------
 
+  /** そのセッションの子プロセスが出力を書く先。無ければ切り離さない。 */
+  #runFileFor(sessionId: string): string | undefined {
+    return this.#runFile?.(sessionId);
+  }
+
   #rawHook(sessionId: string): ((line: string) => void) | undefined {
     const hook = this.#onRawLine;
     return hook ? (line) => hook(sessionId, line) : undefined;
@@ -476,6 +493,25 @@ export class SessionManager {
     this.store.emit({ t: 'session_changed', sessionId });
   }
 
+  /**
+   * ダッシュボードを立ち上げ直したとき、走ったままのターンを追いかけ直す。
+   *
+   * 子は切り離して起動してあるので、こちらが落ちても走り続けている。
+   * 出力はファイルに残っているから、頭から読み直せば取りこぼさない。
+   */
+  async attachRunningTask(sessionId: string): Promise<Task | null> {
+    const session = this.store.require(sessionId);
+    const task = session.currentTask;
+    if (!task || task.status !== 'running') return null;
+    if (task.pid === null || task.outFile === null) return null;
+    if (!isAlive(task.pid)) return null;
+
+    const driver = this.#drivers[session.kind];
+    if (!driver?.attach) return null;
+
+    return this.#runTurn(sessionId, task.prompt, { force: true, attach: task });
+  }
+
   async #runTurn(sessionId: string, prompt: string, opts: DispatchOpts): Promise<Task> {
     const session = this.store.require(sessionId);
     // 新しく頼んだ時点で、前の結果は見たものとして扱う
@@ -493,8 +529,8 @@ export class SessionManager {
     if (!driver) throw new Error(`${session.kind} のドライバが登録されていません`);
 
     const startedAt = this.#clock.now();
-    this.#taskSeq += 1;
-    const task: Task = {
+    if (!opts.attach) this.#taskSeq += 1;
+    const task: Task = opts.attach ?? {
       id: `task-${this.#taskSeq}`,
       sessionId,
       prompt,
@@ -504,14 +540,19 @@ export class SessionManager {
       events: [],
       summary: null,
       recoveredFrom: opts.recoveredFrom ?? null,
+      pid: null,
+      outFile: null,
     };
 
-    // 承認待ち・サブエージェントは前ターンの遺物なので、新しいターンの開始時に消す
-    session.pendingApprovals = [];
-    session.subagents = [];
-    session.thinkingTokens = 0;
-    session.currentTask = task;
-    session.lastError = null;
+    // 承認待ち・サブエージェントは前ターンの遺物なので、新しいターンの開始時に消す。
+    // 追いかけ直しのときは同じターンの続きなので触らない。
+    if (!opts.attach) {
+      session.pendingApprovals = [];
+      session.subagents = [];
+      session.thinkingTokens = 0;
+      session.currentTask = task;
+      session.lastError = null;
+    }
     this.#setState(session, 'thinking');
     this.store.emit({ t: 'task_started', sessionId, task });
 
@@ -536,17 +577,35 @@ export class SessionManager {
       // 同じ場所を触るセッションがいれば、ここで順番を待つ
       if (this.#locks) lock = await this.#locks.acquire(session.workspace.actualCwd, session.id);
 
-      const stream = session.agentSessionId
+      const stream = opts.attach
+        ? driver.attach!({
+            pid: opts.attach.pid!,
+            outFile: opts.attach.outFile!,
+            cwd: session.workspace.actualCwd,
+            signal: controller.signal,
+            onRawLine: this.#rawHook(sessionId),
+            prevInputTokens: session.context.prevInputTokens,
+            prevOutputTokens: session.context.prevOutputTokens,
+            model: session.modelOverride,
+          })
+        : session.agentSessionId
         ? driver.resume(session.agentSessionId, {
             prompt,
             cwd: session.workspace.actualCwd,
             allowedTools,
             permissionMode: session.permissionMode,
             model: session.modelOverride,
+            reasoning: session.reasoningOverride,
             prevInputTokens: session.context.prevInputTokens,
             prevOutputTokens: session.context.prevOutputTokens,
             signal: controller.signal,
             onRawLine: this.#rawHook(sessionId),
+            outFile: this.#runFileFor(sessionId),
+            onStarted: (info) => {
+              task.pid = info.pid;
+              task.outFile = info.outFile;
+              this.store.emit({ t: 'session_changed', sessionId });
+            },
           })
         : driver.start({
             prompt,
@@ -554,12 +613,19 @@ export class SessionManager {
             // claude は UUID をこちらで採番できる。codex は無視され thread_id が返る
             sessionId: session.kind === 'claude' ? session.id : undefined,
             model: session.modelOverride,
+            reasoning: session.reasoningOverride,
             permissionMode: session.permissionMode,
             sandbox: session.workspace.sandbox,
             prevInputTokens: session.context.prevInputTokens,
             prevOutputTokens: session.context.prevOutputTokens,
             signal: controller.signal,
             onRawLine: this.#rawHook(sessionId),
+            outFile: this.#runFileFor(sessionId),
+            onStarted: (info) => {
+              task.pid = info.pid;
+              task.outFile = info.outFile;
+              this.store.emit({ t: 'session_changed', sessionId });
+            },
           });
 
       for await (const event of stream) {

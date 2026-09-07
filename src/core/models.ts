@@ -13,10 +13,18 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+export interface ReasoningLevel {
+  effort: string;
+  description: string;
+}
+
 export interface ModelChoice {
   slug: string;
   displayName: string;
   description: string;
+  /** そのモデルが受け付ける推論の深さ。無いモデルもある。 */
+  reasoningLevels: ReasoningLevel[];
+  defaultReasoning: string | null;
 }
 
 export interface CodexModelInfo {
@@ -68,12 +76,33 @@ export function parseModelsCache(json: unknown): ModelChoice[] {
       slug: m.slug,
       displayName: typeof m.display_name === 'string' ? m.display_name : m.slug,
       description: typeof m.description === 'string' ? m.description : '',
+      reasoningLevels: parseReasoningLevels(m.supported_reasoning_levels),
+      defaultReasoning:
+        typeof m.default_reasoning_level === 'string' ? m.default_reasoning_level : null,
       priority: typeof m.priority === 'number' ? m.priority : 999,
     });
   }
   // codex の並び順（priority）に合わせる。こちらで良し悪しを決めない。
   out.sort((a, b) => a.priority - b.priority);
-  return out.map(({ slug, displayName, description }) => ({ slug, displayName, description }));
+  return out.map(({ priority, ...rest }) => {
+    void priority;
+    return rest;
+  });
+}
+
+function parseReasoningLevels(raw: unknown): ReasoningLevel[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ReasoningLevel[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const r = entry as Record<string, unknown>;
+    if (typeof r.effort !== 'string' || r.effort === '') continue;
+    out.push({
+      effort: r.effort,
+      description: typeof r.description === 'string' ? r.description : '',
+    });
+  }
+  return out;
 }
 
 export interface CodexModelOptions {
