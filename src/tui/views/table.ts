@@ -15,7 +15,7 @@ import { displayWidth, padEnd, padStart, truncate } from '../width.ts';
 import { formatDuration, formatTokens } from './format.ts';
 
 /** 列の定義。幅は固定で、余りは cwd 列に回す。 */
-interface Column {
+export interface Column {
   key: string;
   header: string;
   width: number;
@@ -33,19 +33,57 @@ const COLUMNS: Column[] = [
   { key: 'cmds', header: '実行', width: 4, align: 'right' },
   { key: 'tokens', header: 'トークン', width: 8, align: 'right' },
   { key: 'flags', header: '', width: 4 },
+  { key: 'model', header: 'モデル', width: 20 },
   { key: 'activity', header: 'いま何をしているか', width: 0 },
 ];
 
+/**
+ * その幅で出す列。
+ *
+ * モデル名は長い（gpt-5.6-terra/high で 18 桁）。最小幅の 100 桁で出すと
+ * 作業内容の列が潰れてしまうので、余裕があるときだけ出す。
+ */
+export const MODEL_COLUMN_MIN_WIDTH = 124;
+
+export function columnsFor(width: number): Column[] {
+  if (width >= MODEL_COLUMN_MIN_WIDTH) return COLUMNS;
+  return COLUMNS.filter((c) => c.key !== 'model');
+}
+
+export interface CodexDefaults {
+  model: string | null;
+  effort: string | null;
+}
+
+/**
+ * そのセッションが実際に使うモデルと推論の深さ。
+ *
+ * codex は exec の出力にモデルを載せてこないので、指定していなければ
+ * config.toml の既定がそのまま効く。claude は CLI が報告してくる。
+ */
+export function modelFor(session: Session, defaults?: CodexDefaults): string {
+  const model =
+    session.modelOverride ??
+    (session.kind === 'codex' ? (session.model ?? defaults?.model ?? null) : session.model);
+  if (!model) return '';
+
+  const effort =
+    session.kind === 'codex' ? (session.reasoningOverride ?? defaults?.effort ?? null) : null;
+  return effort ? `${model}/${effort}` : model;
+}
+
 const GAP = 1;
 
-/** cwd 列に回せる幅を計算する */
-function cwdWidth(total: number): number {
-  const fixed = COLUMNS.reduce((sum, c) => sum + c.width + GAP, 0);
+/** 可変幅の列（作業内容）に回せる幅を計算する */
+function flexWidth(total: number, columns: Column[]): number {
+  const fixed = columns.reduce((sum, c) => sum + c.width + GAP, 0);
   return Math.max(12, total - fixed - 1);
 }
 
 export interface TableViewState {
   dashboard: Dashboard;
+  /** codex の config.toml の既定。指定していないセッションはこれが効く。 */
+  codexDefaults?: CodexDefaults;
   selected: number;
   frame: number;
   now: number;
@@ -126,13 +164,14 @@ export function drawTable(screen: Screen, rect: Rect, s: TableViewState): void {
   const { theme } = s;
   fillRect(screen, rect.x, rect.y, rect.w, rect.h, theme.bg);
 
-  const cwdW = cwdWidth(rect.w);
-  const widths = COLUMNS.map((c) => (c.key === 'activity' ? cwdW : c.width));
+  const columns = columnsFor(rect.w);
+  const flex = flexWidth(rect.w, columns);
+  const widths = columns.map((c) => (c.key === 'activity' ? flex : c.width));
 
   // 見出し
   let x = rect.x + 1;
-  for (let i = 0; i < COLUMNS.length; i += 1) {
-    const col = COLUMNS[i]!;
+  for (let i = 0; i < columns.length; i += 1) {
+    const col = columns[i]!;
     const w = widths[i]!;
     if (col.header !== '') {
       textClipped(screen, x, rect.y, w, col.header, { fg: theme.textDim, bg: theme.bg });
@@ -153,7 +192,7 @@ export function drawTable(screen: Screen, rect: Rect, s: TableViewState): void {
     const bg = selected ? theme.panelBg : row % 2 === 1 ? theme.rowAlt : theme.bg;
 
     fillRect(screen, rect.x, y, rect.w, 1, bg);
-    if (session) drawRow(screen, rect, y, session, widths, bg, selected, s);
+    if (session) drawRow(screen, rect, y, session, columns, widths, bg, selected, s);
     else drawEmptyRow(screen, rect, y, row, widths, bg, selected, theme);
   }
 
@@ -173,6 +212,7 @@ function drawRow(
   rect: Rect,
   y: number,
   session: Session,
+  columns: Column[],
   widths: number[],
   bg: number,
   selected: boolean,
@@ -180,8 +220,13 @@ function drawRow(
 ): void {
   const { theme } = s;
   let x = rect.x + 1;
-  const cell = (i: number, text: string, fg: number, bold = false): void => {
-    const col = COLUMNS[i]!;
+
+  // 列は幅によって出たり出なかったりするので、番号ではなくキーで引く。
+  const indexOf = (key: string): number => columns.findIndex((c) => c.key === key);
+  const cell = (key: string, text: string, fg: number, bold = false): void => {
+    const i = indexOf(key);
+    if (i < 0) return;
+    const col = columns[i]!;
     const w = widths[i]!;
     const t = truncate(text, w);
     // 右寄せは表示幅で測る。文字数だと全角でずれる。
@@ -194,19 +239,19 @@ function drawRow(
   if (!BUSY_STATES.has(session.state) && session.unseenResult !== null) {
     const done = session.unseenResult === 'done';
     cell(
-      0,
+      'mark',
       done ? (s.ascii ? '*' : '✓') : (s.ascii ? '!' : '×'),
       done ? theme.gauge.good : theme.gauge.critical,
       true,
     );
   } else {
-    cell(0, activityMark(session.state, s.animate ? s.frame : 0, s.ascii), theme.state[session.state]);
+    cell('mark', activityMark(session.state, s.animate ? s.frame : 0, s.ascii), theme.state[session.state]);
   }
-  cell(1, session.name, selected ? theme.textBright : sessionColor(theme, session.color), selected);
-  cell(2, STATE_LABEL[session.state], theme.state[session.state]);
+  cell('name', session.name, selected ? theme.textBright : sessionColor(theme, session.color), selected);
+  cell('state', STATE_LABEL[session.state], theme.state[session.state]);
 
   // コンテキストはゲージ + 数値
-  const ctxW = widths[3]!;
+  const ctxW = widths[indexOf('context')]!;
   const pct = Math.round(session.context.ratio * 100);
   const gaugeW = Math.max(4, ctxW - 7);
   drawGauge(screen, x, y, gaugeW, session.context.ratio, {
@@ -220,19 +265,21 @@ function drawRow(
   x += ctxW + GAP;
 
   const elapsed = s.now - session.uptime.startedAt;
-  cell(4, formatDuration(elapsed), theme.textDim);
-  cell(5, String(session.stats.tasksCompleted), theme.text);
-  cell(6, String(session.stats.filesEdited), theme.textDim);
-  cell(7, String(session.stats.commandsRun), theme.textDim);
-  cell(8, formatTokens(session.stats.totalTokensIn + session.stats.totalTokensOut), theme.textDim);
-  cell(9, flagsFor(session), theme.accent);
+  cell('uptime', formatDuration(elapsed), theme.textDim);
+  cell('tasks', String(session.stats.tasksCompleted), theme.text);
+  cell('edits', String(session.stats.filesEdited), theme.textDim);
+  cell('cmds', String(session.stats.commandsRun), theme.textDim);
+  cell('tokens', formatTokens(session.stats.totalTokensIn + session.stats.totalTokensOut), theme.textDim);
+  cell('flags', flagsFor(session), theme.accent);
+  cell('model', modelFor(session, s.codexDefaults) || '—', theme.textDim);
 
   // 動いていれば作業内容、止まっていれば作業ディレクトリ。
   // パスは末尾のほうが情報量が多いので、長ければ先頭を省く。
   const activity = activityText(session);
+  const activityWidth = widths[indexOf('activity')] ?? 20;
   cell(
-    10,
-    activity.busy ? activity.text : tailPath(activity.text, widths[10]!),
+    'activity',
+    activity.busy ? activity.text : tailPath(activity.text, activityWidth),
     activity.busy ? theme.text : theme.system,
   );
 }

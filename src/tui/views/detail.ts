@@ -10,6 +10,8 @@ import { drawGauge, fillRect, hline, textClipped, textRight, wrapText } from '..
 import { ROLE_LABEL } from '../../core/naming.ts';
 import { utilization } from '../../core/stats.ts';
 import { formatDuration, formatPercent, formatTokens } from './format.ts';
+import { modelFor } from './table.ts';
+import type { CodexDefaults } from './table.ts';
 
 export { formatDuration, formatTokens } from './format.ts';
 
@@ -20,6 +22,8 @@ export interface DetailViewState {
   expanded: boolean;
   /** 直近のやり取り。新しいものが後ろ。 */
   turns?: readonly RecentTurn[];
+  /** codex の config.toml の既定 */
+  codexDefaults?: CodexDefaults;
 }
 
 /** 指示と、それに対する返事の組。 */
@@ -138,6 +142,13 @@ export function drawDetail(screen: Screen, rect: Rect, s: DetailViewState): void
       : ws.requestedCwd + (ws.sandbox ? `  sandbox=${ws.sandbox}` : '');
   textClipped(screen, rect.x + 2, y, inner, wsText, { fg: theme.system, bg });
   y += 1;
+
+  // 使っているモデルと推論の深さ。一覧では幅が足りず出せないことがある。
+  const model = modelFor(session, s.codexDefaults);
+  if (model !== '' && y < rect.y + rect.h) {
+    textClipped(screen, rect.x + 2, y, inner, `モデル  ${model}`, { fg: theme.system, bg });
+    y += 1;
+  }
 
   // 承認待ち
   if (session.pendingApprovals.length > 0 && y < rect.y + rect.h) {

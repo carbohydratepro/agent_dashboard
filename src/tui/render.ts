@@ -13,6 +13,7 @@ import { DEFAULT_THEME } from './theme.ts';
 import { drawTable, tableRows } from './views/table.ts';
 import { drawDetail } from './views/detail.ts';
 import type { RecentTurn } from './views/detail.ts';
+import type { CodexDefaults } from './views/table.ts';
 import { drawHeader, drawKeyBar, MAIN_HINTS } from './views/chrome.ts';
 import { drawUsage } from './views/usage.ts';
 import { fillRect, textCentered } from './paint.ts';
@@ -33,6 +34,8 @@ export interface MainScreenState {
   resources?: ResourceSample | null;
   /** 選択中のセッションの直近のやり取り */
   turns?: readonly RecentTurn[];
+  /** codex の config.toml の既定 */
+  codexDefaults?: CodexDefaults;
 }
 
 /** 選択中の行にいるセッション。空きなら null。 */
@@ -89,6 +92,7 @@ export function drawMainScreen(screen: Screen, s: MainScreenState): void {
     theme,
     animate: s.animate,
     ascii: s.ascii,
+      codexDefaults: s.codexDefaults,
   });
   drawDetail(screen, layout.detail, {
     session: sessionAtRow(s.dashboard, s.selected),
@@ -96,6 +100,7 @@ export function drawMainScreen(screen: Screen, s: MainScreenState): void {
     now: s.now,
     expanded: s.expanded,
     turns: s.turns,
+      codexDefaults: s.codexDefaults,
   });
   drawKeyBar(screen, layout.footer, MAIN_HINTS, theme);
 }

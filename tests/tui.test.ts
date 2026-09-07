@@ -10,13 +10,21 @@ import { computeLayout, tooSmall, MIN_HEIGHT, MIN_WIDTH } from '../src/tui/layou
 import { drawGauge, wrapText } from '../src/tui/paint.ts';
 import { drawMainScreen } from '../src/tui/render.ts';
 import { formatDuration, formatTokens } from '../src/tui/views/format.ts';
-import { activityText, flagsFor, tableRows, tableScrollOffset, tailPath } from '../src/tui/views/table.ts';
+import {
+  activityText,
+  columnsFor,
+  flagsFor,
+  modelFor,
+  tableRows,
+  tableScrollOffset,
+  tailPath,
+} from '../src/tui/views/table.ts';
 import { ResourceMonitor, formatBytes } from '../src/core/resources.ts';
 import { activityMark, isBusy, thinkingLevel } from '../src/tui/animation.ts';
 import { recentActivity, recentTurns } from '../src/tui/views/detail.ts';
 import { sampleDashboard, FIXTURE_NOW } from './fixtures/dashboard.ts';
 import { createDashboard } from '../src/core/store.ts';
-import type { Dashboard } from '../src/core/types.ts';
+import type { Dashboard, Session } from '../src/core/types.ts';
 
 // ---------------------------------------------------------------------------
 
@@ -601,5 +609,109 @@ describe('詳細パネルの直近のやり取り', () => {
     });
     const rows = screen.toStrings();
     assert.ok(rows.some((r) => r.includes('一行目 二行目 三行目')), '潰して 1 行にする');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('使っているモデルの表示', () => {
+  const defaults = { model: 'gpt-6-astra', effort: 'high' };
+
+  function session(over: Partial<Session>): Session {
+    return {
+      kind: 'codex',
+      model: null,
+      modelOverride: null,
+      reasoningOverride: null,
+      ...over,
+    } as unknown as Session;
+  }
+
+  test('指定していなければ config.toml の既定が効く', () => {
+    // codex は exec の出力にモデルを載せてこないので、既定がそのまま使われる
+    assert.equal(modelFor(session({}), defaults), 'gpt-6-astra/high');
+  });
+
+  test('セッションで指定していればそちら', () => {
+    assert.equal(
+      modelFor(session({ modelOverride: 'gpt-5.5', reasoningOverride: 'xhigh' }), defaults),
+      'gpt-5.5/xhigh',
+    );
+  });
+
+  test('モデルだけ変えたら深さは既定のまま', () => {
+    assert.equal(modelFor(session({ modelOverride: 'gpt-5.5' }), defaults), 'gpt-5.5/high');
+  });
+
+  test('claude には深さを付けない', () => {
+    // 推論の深さは codex の設定。claude には無い。
+    assert.equal(modelFor(session({ kind: 'claude', model: 'claude-opus-5' }), defaults), 'claude-opus-5');
+  });
+
+  test('分からなければ空', () => {
+    assert.equal(modelFor(session({ kind: 'claude' }), defaults), '');
+    assert.equal(modelFor(session({}), undefined), '');
+  });
+
+  test('広い画面では一覧に列が出る', () => {
+    const dashboard = sampleDashboard();
+    dashboard.sessions[0]!.kind = 'codex';
+
+    const screen = new Screen(130, 32, 'none');
+    drawMainScreen(screen, {
+      dashboard,
+      selected: 0,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+      codexDefaults: defaults,
+    });
+    const rows = screen.toStrings();
+
+    assert.ok(rows[2]?.includes('モデル'), '見出しが出る');
+    assert.ok(rows.some((r) => r.includes('gpt-6-astra/high')));
+  });
+
+  test('狭い画面では列を出さず、作業内容を潰さない', () => {
+    // モデル名は長い。最小幅で出すと作業内容が読めなくなる。
+    assert.deepEqual(
+      columnsFor(100).map((c) => c.key).includes('model'),
+      false,
+    );
+    assert.equal(columnsFor(130).map((c) => c.key).includes('model'), true);
+
+    const dashboard = sampleDashboard();
+    const screen = new Screen(100, 32, 'none');
+    drawMainScreen(screen, {
+      dashboard,
+      selected: 0,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+      codexDefaults: defaults,
+    });
+    assert.equal(screen.toStrings()[2]?.includes('モデル'), false);
+  });
+
+  test('狭くても詳細には出る', () => {
+    const dashboard = sampleDashboard();
+    dashboard.sessions[0]!.kind = 'codex';
+
+    const screen = new Screen(100, 32, 'none');
+    drawMainScreen(screen, {
+      dashboard,
+      selected: 0,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+      codexDefaults: defaults,
+    });
+    assert.ok(
+      screen.toStrings().some((r) => r.includes('モデル  gpt-6-astra/high')),
+      '選んでいるセッションのぶんは必ず読める',
+    );
   });
 });

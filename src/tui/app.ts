@@ -183,6 +183,11 @@ export class App {
   #approvalIndex = 0;
   #conversations = new Map<string, ConversationState>();
   #completionNote: string | null = null;
+  /**
+   * codex の config.toml の既定。指定していないセッションはこれが効く。
+   * 毎フレーム読むほどのものではないので覚えておき、/model のあとだけ取り直す。
+   */
+  #codexDefaults: { model: string | null; effort: string | null } | null = null;
   #resourceMonitor = new ResourceMonitor();
   #resources: ResourceSample | null = null;
   #resourcesAt = 0;
@@ -334,6 +339,7 @@ export class App {
           banner: this.banner,
           resources: this.#resources,
           turns: this.#turnsForSelected(),
+          codexDefaults: this.#codexDefaultsOnce(),
         });
         return;
 
@@ -521,6 +527,14 @@ export class App {
    * 一覧で選んでいるセッションの直近のやり取り。
    * 会話は #conversationFor が覚えているので、読み直しは初回だけ。
    */
+  #codexDefaultsOnce(): { model: string | null; effort: string | null } {
+    if (!this.#codexDefaults) {
+      const info = readCodexModelInfo();
+      this.#codexDefaults = { model: info.defaultModel, effort: info.reasoningEffort };
+    }
+    return this.#codexDefaults;
+  }
+
   #turnsForSelected(): RecentTurn[] {
     const session = this.selectedSession;
     if (!session) return [];
@@ -1437,6 +1451,7 @@ export class App {
   #applyModelPick(session: Session, slug: string, effort: string | null): void {
     session.modelOverride = slug;
     session.reasoningOverride = effort;
+    this.#codexDefaults = null;
     const info = this.#modelPick?.info;
     this.#modelPick = null;
 
