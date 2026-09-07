@@ -58,14 +58,9 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** いま Enter で下書きをそのまま送れる状態か */
+/** いま控えを送れる状態か */
 export function canSendDraft(session: Session): boolean {
-  return (
-    session.state === 'idle' &&
-    session.currentTask !== null &&
-    session.currentTask.status !== 'running' &&
-    session.nextPrompt.trim() !== ''
-  );
+  return !BUSY_STATES.has(session.state) && session.drafts.length > 0;
 }
 
 export function drawDetail(screen: Screen, rect: Rect, s: DetailViewState): void {
@@ -238,34 +233,29 @@ export function drawDetail(screen: Screen, rect: Rect, s: DetailViewState): void
     }
   }
 
-  // 次に送るプロンプト
-  const draft = session.nextPrompt.trim();
-  if (draft !== '' && y < rect.y + rect.h) {
-    if (canSendDraft(session) && y + 1 < rect.y + rect.h) {
-      textClipped(screen, rect.x + 2, y, inner, '次に送るプロンプト', {
-        fg: theme.accent,
+  // 次に送るプロンプトの控え
+  if (session.drafts.length > 0 && y < rect.y + rect.h) {
+    textClipped(screen, rect.x + 2, y, inner, `控え ${session.drafts.length} 件   [p] 選んで送る`, {
+      fg: theme.accent,
+      bg,
+      bold: true,
+    });
+    y += 1;
+
+    // 入るぶんだけ頭を見せる。選ぶのは [p] の一覧で。
+    for (const draft of session.drafts.slice(0, 3)) {
+      if (y >= rect.y + rect.h) break;
+      textClipped(screen, rect.x + 4, y, inner - 4, `・${oneLine(draft.text)}`, {
+        fg: theme.textBright,
         bg,
-        bold: true,
       });
       y += 1;
-      for (const line of wrapText(session.nextPrompt, inner - 6).slice(0, 2)) {
-        if (y >= rect.y + rect.h) break;
-        textClipped(screen, rect.x + 4, y, inner - 4, `「${line}」`, {
-          fg: theme.textBright,
-          bg,
-        });
-        y += 1;
-      }
-      if (y < rect.y + rect.h) {
-        textClipped(screen, rect.x + 4, y, inner - 4, '[Enter] 送信   [e] 編集   [d] 削除', {
-          fg: theme.textDim,
-          bg,
-        });
-        y += 1;
-      }
-    } else {
-      const first = session.nextPrompt.split('\n')[0] ?? '';
-      textClipped(screen, rect.x + 2, y, inner, `[P] 次: ${first}`, { fg: theme.accent, bg });
+    }
+    if (session.drafts.length > 3 && y < rect.y + rect.h) {
+      textClipped(screen, rect.x + 4, y, inner - 4, `ほか ${session.drafts.length - 3} 件`, {
+        fg: theme.textDim,
+        bg,
+      });
       y += 1;
     }
   }

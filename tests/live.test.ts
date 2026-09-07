@@ -328,7 +328,7 @@ describe('落として立ち上げ直す（SPEC §14）', { skip: !LIVE && 'VO_L
       const agentSessionId = emp.agentSessionId;
       const createdId = emp.id;
       const completed = emp.stats.tasksCompleted;
-      first.manager.setNextPrompt(emp.id, '次はテストを書いて');
+      first.manager.addDraft(emp.id, '次はテストを書いて');
       first.detachAutosave();
 
       // --- ここでアプリが落ちる ---
@@ -340,7 +340,7 @@ describe('落として立ち上げ直す（SPEC §14）', { skip: !LIVE && 'VO_L
       assert.equal(restored.id, createdId, '同じセッションが戻る');
       assert.equal(restored.agentSessionId, agentSessionId, '会話への紐が残っている');
       assert.equal(restored.state, 'offline');
-      assert.equal(restored.nextPrompt, '次はテストを書いて', 'メモも残る');
+      assert.equal(restored.drafts[0]?.text, '次はテストを書いて', '控えも残る');
       assert.equal(restored.stats.tasksCompleted, completed);
       assert.equal(restored.name, emp.name);
 

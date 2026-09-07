@@ -161,9 +161,7 @@ export class RecoveryCoordinator {
     // セッションが確定する前に切れた場合は復帰しようがない。
     // 元の指示をメモに書き戻して、ユーザーがやり直せるようにする（SPEC §10.7）。
     if (!emp.agentSessionId) {
-      if (originalPrompt && !emp.nextPrompt.trim()) {
-        this.#manager.setNextPrompt(emp.id, originalPrompt);
-      }
+      if (originalPrompt) this.#manager.addDraft(emp.id, originalPrompt);
       this.#manager.forceState(emp.id, 'idle');
       emp.recovery.lastError = 'セッションが確定する前に中断されました';
       return 'skipped';

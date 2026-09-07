@@ -266,7 +266,7 @@ describe('画面の中の日本語入力', () => {
     h.term.feed('次はドキュメントを更新する');
     h.term.feed('\r');
 
-    assert.equal(emp.nextPrompt, '次はドキュメントを更新する');
+    assert.equal(emp.drafts[0]!.text, '次はドキュメントを更新する');
   });
 
   test('日本語の下書きが長くても編集できる', () => {
@@ -280,7 +280,7 @@ describe('画面の中の日本語入力', () => {
     assert.ok(text.includes('‹'));
     assert.ok(h.app.screen.cursor, '下書き欄にもカーソルが置かれる');
     h.term.feed('\r');
-    assert.equal(emp.nextPrompt, '長い下書き'.repeat(30));
+    assert.equal(emp.drafts[0]!.text, '長い下書き'.repeat(30));
   });
 
   test('追加ダイアログのパスにも日本語を入れられる', () => {
@@ -342,7 +342,7 @@ describe('改行（端末に奪われないキー）', () => {
     h.term.feed('\n');
     h.term.feed('下');
     h.term.feed('\r');
-    assert.equal(session.nextPrompt, '上\n下');
+    assert.equal(session.drafts[0]!.text, '上\n下');
   });
 
   test('日本語でも改行できる', async () => {

@@ -87,7 +87,7 @@ export const MAIN_HINTS: KeyHint[] = [
   { key: 'Enter', label: '開く' },
   { key: 'n', label: '追加' },
   { key: 'X', label: '解放' },
-  { key: 'e', label: '下書き' },
+  { key: 'p', label: '控え' },
   { key: 'L', label: 'ログ' },
   { key: 's', label: '統計' },
   { key: 'a', label: '履歴' },

@@ -22,7 +22,7 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import type { Session, Dashboard, RateLimitInfo, Task } from './types.ts';
+import type { Session, Dashboard, Draft, RateLimitInfo, Task } from './types.ts';
 import type { History } from './analytics.ts';
 import { createHistory } from './analytics.ts';
 import type { DashboardConfig } from './config.ts';
@@ -38,6 +38,19 @@ export interface PersistedDashboard {
   title: string;
   rateLimit: RateLimitInfo | null;
   savedAt: number;
+}
+
+/** 控えが 1 件だけだった頃の形 */
+interface LegacySession {
+  id: string;
+  nextPrompt?: string;
+  nextPromptUpdatedAt?: number;
+}
+
+function migrateNextPrompt(session: LegacySession): Draft[] {
+  const text = (session.nextPrompt ?? '').trim();
+  if (text === '') return [];
+  return [{ id: `legacy-${session.id}`, text, updatedAt: session.nextPromptUpdatedAt ?? 0 }];
 }
 
 export interface LoadedSession {
@@ -192,6 +205,8 @@ export class Persistence {
       loaded.push({
         session: {
           ...session,
+          // 控えは以前 1 件だけの nextPrompt だった。古い保存を拾い直す。
+          drafts: session.drafts ?? migrateNextPrompt(session as unknown as LegacySession),
           // 走っていたプロセスはもう居ない
           state: session.archived ? 'offline' : 'offline',
           subagents: [],

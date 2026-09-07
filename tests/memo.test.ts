@@ -1,4 +1,9 @@
-/** 次やること下書き（SPEC §12）。 */
+/**
+ * 次に送るプロンプトの控え（SPEC §12）。
+ *
+ * 要は「勝手に出て行かないこと」。作業が終わったところで別のことを
+ * 頼みたくなるのが普通で、自動で次が送られると取り消せない。
+ */
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,12 +15,11 @@ import { SessionManager } from '../src/core/session-manager.ts';
 import { StateStore, createDashboard } from '../src/core/store.ts';
 import { MockDriver, successfulTurn } from '../src/core/drivers/mock.ts';
 import { SeqIdGen } from '../src/core/clock.ts';
-import { RecoveryCoordinator } from '../src/core/recovery.ts';
 import { flagsFor } from '../src/tui/views/table.ts';
 
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
-function harness(opts: { autoSendNextMemo?: boolean } = {}) {
+function harness() {
   const store = new StateStore(createDashboard({ slotCount: 6 }));
   const claude = new MockDriver({ kind: 'claude' });
   claude.setScenario(() => successfulTurn());
@@ -24,7 +28,7 @@ function harness(opts: { autoSendNextMemo?: boolean } = {}) {
     store,
     drivers: { claude, codex },
     ids: new SeqIdGen(),
-    config: { defaultCwd: '/ws', autoSendNextMemo: opts.autoSendNextMemo ?? false },
+    config: { defaultCwd: '/ws' },
   });
   const term = new FakeTerminal(100, 32);
   const app = new App({ manager, terminal: term, animate: false });
@@ -48,227 +52,212 @@ function harness(opts: { autoSendNextMemo?: boolean } = {}) {
 
 // ---------------------------------------------------------------------------
 
-describe('編集と保存', () => {
-  test('m で開いて書いて Enter で保存する', () => {
+describe('控えを書く', () => {
+  test('e で開いて書いて Enter で足す', () => {
     const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
+    const session = h.manager.createSession({ kind: 'claude' });
 
     h.press('e');
-    assert.ok(h.view().includes('次に送るプロンプト'));
-    h.press('doc', '\r');
-
-    assert.equal(emp.nextPrompt, 'doc');
-  });
-
-  test('Alt+Enter で複数行書ける', () => {
-    const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
-    h.press('e', 'one', '\x1b\r', 'two', '\r');
-    assert.equal(emp.nextPrompt, 'one\ntwo');
-  });
-
-  test('既存の下書きを開くと編集できる状態で入る', () => {
-    const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
-    h.manager.setNextPrompt(emp.id, '既存の内容');
-
-    h.press('e');
-    assert.ok(h.view().includes('既存の内容'));
-    h.press('\x7f\x7f', '\r');
-    assert.equal(emp.nextPrompt, '既存の', 'バックスペース 2 回ぶん');
-  });
-
-  test('会話モードからは Alt+e で開ける', () => {
-    const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
-    h.press('\r');
-    h.press('\x1be');
     assert.equal(h.app.screenId, 'draft');
-    h.press('x', '\r');
-    assert.equal(emp.nextPrompt, 'x');
+    h.press('次はテストを書いて', '\r');
+
+    assert.equal(h.app.screenId, 'main');
+    assert.equal(session.drafts.length, 1);
+    assert.equal(session.drafts[0]!.text, '次はテストを書いて');
   });
 
-  test('会話モードで打った e は必ず文字として入る', () => {
+  test('何件でも積める', () => {
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude' });
+
+    h.press('e', 'ひとつ目', '\r');
+    h.press('e', 'ふたつ目', '\r');
+    h.press('e', 'みっつ目', '\r');
+
+    assert.deepEqual(
+      session.drafts.map((d) => d.text),
+      ['ひとつ目', 'ふたつ目', 'みっつ目'],
+    );
+  });
+
+  test('空では足さない', () => {
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude' });
+    h.press('e', '\r');
+    assert.equal(session.drafts.length, 0);
+  });
+
+  test('Ctrl+J で複数行書ける', () => {
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude' });
+    h.press('e', '一行目', '\n', '二行目', '\r');
+    assert.equal(session.drafts[0]!.text, '一行目\n二行目');
+  });
+
+  test('控えがあると行に印が出る', () => {
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude' });
+    assert.equal(flagsFor(session).includes('P'), false);
+
+    h.manager.addDraft(session.id, 'あとで');
+    assert.ok(flagsFor(session).includes('P'));
+  });
+});
+
+describe('選んで送る', () => {
+  function withDrafts(...texts: string[]) {
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude' });
+    for (const t of texts) h.manager.addDraft(session.id, t);
+    return { ...h, session };
+  }
+
+  test('p で一覧が開く', () => {
+    const h = withDrafts('ひとつ目', 'ふたつ目');
+    h.press('p');
+
+    assert.equal(h.app.screenId, 'drafts');
+    const view = h.view();
+    assert.ok(view.includes('ひとつ目'));
+    assert.ok(view.includes('ふたつ目'));
+  });
+
+  test('順番ではなく選んだものが出て行く', async () => {
+    const h = withDrafts('ひとつ目', 'ふたつ目', 'みっつ目');
+    h.press('p');
+    h.press('\x1b[B', '\x1b[B');
+    h.press('\r');
+    await settle();
+
+    assert.equal(h.claude.calls[0]?.prompt, 'みっつ目', '先頭ではなく選んだもの');
+    assert.deepEqual(
+      h.session.drafts.map((d) => d.text),
+      ['ひとつ目', 'ふたつ目'],
+      '送ったものだけ消える',
+    );
+  });
+
+  test('送ると会話が開く', async () => {
+    const h = withDrafts('やって');
+    h.press('p', '\r');
+    await settle();
+    assert.equal(h.app.screenId, 'conversation');
+  });
+
+  test('実行中は送らない', async () => {
+    const h = withDrafts('あとで');
+    h.manager.forceState(h.session.id, 'working');
+
+    h.press('p', '\r');
+    await settle();
+
+    assert.equal(h.claude.calls.length, 0);
+    assert.equal(h.session.drafts.length, 1, '控えは残る');
+    assert.ok(h.view().includes('実行中'));
+  });
+
+  test('d で消せる', () => {
+    const h = withDrafts('いらない', 'のこす');
+    h.press('p', 'd');
+
+    assert.deepEqual(
+      h.session.drafts.map((d) => d.text),
+      ['のこす'],
+    );
+  });
+
+  test('e で直せる', () => {
+    const h = withDrafts('まちがい');
+    h.press('p', 'e');
+    assert.equal(h.app.screenId, 'draft');
+
+    h.press('\x7f'.repeat(4), 'なおした', '\r');
+    assert.equal(h.session.drafts[0]!.text, 'なおした');
+  });
+
+  test('全部消えたら一覧を閉じる', () => {
+    const h = withDrafts('ひとつだけ');
+    h.press('p', 'd');
+    assert.equal(h.app.screenId, 'main');
+  });
+
+  test('控えが無いときの p は書く画面を開く', () => {
     const h = harness();
     h.manager.createSession({ kind: 'claude' });
-    h.press('\r');
+    h.press('p');
+    assert.equal(h.app.screenId, 'draft');
+  });
+});
 
-    // 入力欄が空でも文字を奪わない。日本語入力中に画面が飛ばないように。
-    h.press('e');
+describe('勝手には送らない', () => {
+  test('作業が終わっても自動では送らない', async () => {
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude' });
+    h.manager.addDraft(session.id, '次はこれ');
+
+    await h.manager.dispatch(session.id, '最初の指示');
+    await settle();
+
+    assert.deepEqual(
+      h.claude.calls.map((c) => c.prompt),
+      ['最初の指示'],
+      '控えは出て行かない',
+    );
+    assert.equal(session.drafts.length, 1);
+  });
+
+  test('一覧で Enter を押しても送らない', async () => {
+    // 会話を開くだけ。ここで送ると、別のことを頼みたいときに取り消せない。
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude' });
+    h.manager.addDraft(session.id, '次はこれ');
+
+    h.press('\r');
+    await settle();
+
     assert.equal(h.app.screenId, 'conversation');
-    h.press('dit');
-    assert.ok(h.view().includes('edit'));
-  });
-});
-
-describe('席と詳細への表示', () => {
-  test('下書きがあると席にバッジが出る', () => {
-    const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
-    assert.equal(flagsFor(emp).includes('P'), false);
-    h.manager.setNextPrompt(emp.id, 'あとで');
-    assert.ok(flagsFor(emp).includes('P'));
+    assert.equal(h.claude.calls.length, 0);
+    assert.equal(session.drafts.length, 1);
   });
 
-  test('作業中は 1 行の控えめな表示', async () => {
+  test('会話で空のまま Enter を押しても送らない', async () => {
     const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
-    h.manager.setNextPrompt(emp.id, 'あとでドキュメント');
+    const session = h.manager.createSession({ kind: 'claude' });
+    h.manager.addDraft(session.id, '次はこれ');
 
-    h.claude.setHangAfter(2);
-    const running = h.manager.dispatch(emp.id, '作業中');
-    await settle();
-
-    const text = h.view();
-    assert.ok(text.includes('[P] 次: あとでドキュメント'));
-    assert.equal(text.includes('[Enter] 送信'), false);
-
-    h.claude.setHangAfter(null);
-    h.manager.interrupt(emp.id, 'user');
-    await running;
-  });
-
-  test('タスクが終わると「そのまま出せる」と提示する', async () => {
-    const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
-    h.manager.setNextPrompt(emp.id, 'テストを追加して');
-    await h.manager.dispatch(emp.id, 'まず実装');
-    await settle();
-
-    const text = h.view();
-    assert.ok(text.includes('次に送るプロンプト'));
-    assert.ok(text.includes('「テストを追加して」'));
-    assert.ok(text.includes('[Enter] 送信'));
-    assert.ok(text.includes('[d] 削除'));
-  });
-});
-
-describe('送信', () => {
-  test('完了後の Enter で下書きがそのまま指示になる', async () => {
-    const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
-    await h.manager.dispatch(emp.id, 'まず実装');
-    h.manager.setNextPrompt(emp.id, 'テストを追加して');
-
+    h.press('\r');
     h.press('\r');
     await settle();
 
-    assert.equal(h.claude.calls[1]?.prompt, 'テストを追加して');
-    assert.equal(emp.nextPrompt, '', '送ったら消える');
-    assert.equal(h.app.screenId, 'main', '会話画面には入らない');
+    assert.equal(h.claude.calls.length, 0);
+    assert.equal(session.drafts.length, 1);
   });
 
-  test('下書きが無ければ Enter は会話モードに入る', async () => {
+  test('別のことを打てばそちらが送られる', async () => {
+    // 控えを用意したあとに、返答を見て別の指示を出す場面
     const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
-    await h.manager.dispatch(emp.id, 'なにか');
+    const session = h.manager.createSession({ kind: 'claude' });
+    h.manager.addDraft(session.id, '用意していた指示');
+
     h.press('\r');
-    assert.equal(h.app.screenId, 'conversation');
+    h.press('やっぱりこっちを先に', '\r');
+    await settle();
+
+    assert.equal(h.claude.calls[0]?.prompt, 'やっぱりこっちを先に');
+    assert.equal(session.drafts.length, 1, '控えはそのまま残る');
   });
 
-  test('会話モードで入力欄が空なら Enter で下書きを送る', async () => {
+  test('会話中でも Alt+p で選んで送れる', async () => {
     const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
+    const session = h.manager.createSession({ kind: 'claude' });
+    h.manager.addDraft(session.id, '控えの指示');
 
-    // 下書きが無い状態で入る（下書きがあるとオフィスの Enter で直接送られてしまう）
     h.press('\r');
-    assert.equal(h.app.screenId, 'conversation');
-
-    h.manager.setNextPrompt(emp.id, '下書きの内容');
-    h.press('\r');
-    await settle();
-
-    assert.equal(h.claude.calls[0]?.prompt, '下書きの内容');
-    assert.equal(emp.nextPrompt, '');
-  });
-
-  test('送った下書きは会話履歴に残る', async () => {
-    const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
-    await h.manager.dispatch(emp.id, '最初の指示');
-    h.manager.setNextPrompt(emp.id, '下書きから出した指示');
+    h.press('\x1bp');
+    assert.equal(h.app.screenId, 'drafts');
 
     h.press('\r');
     await settle();
-
-    h.press('\r');
-    assert.ok(h.view().includes('下書きから出した指示'));
-  });
-
-  test('d で消すと提示も消える', async () => {
-    const h = harness();
-    const emp = h.manager.createSession({ kind: 'claude' });
-    await h.manager.dispatch(emp.id, 'なにか');
-    h.manager.setNextPrompt(emp.id, '消される');
-    assert.ok(h.view().includes('消される'));
-
-    h.press('d');
-    assert.equal(emp.nextPrompt, '');
-    assert.equal(h.view().includes('消される'), false);
-  });
-});
-
-describe('自動送信', () => {
-  test('オンなら完了後に自動で次を実行する', async () => {
-    const h = harness({ autoSendNextMemo: true });
-    const emp = h.manager.createSession({ kind: 'claude' });
-    h.manager.setNextPrompt(emp.id, '次はドキュメント');
-
-    await h.manager.dispatch(emp.id, 'まずコード');
-    await settle();
-
-    assert.deepEqual(h.claude.calls.map((c) => c.prompt), ['まずコード', '次はドキュメント']);
-    assert.equal(emp.nextPrompt, '');
-    assert.equal(emp.stats.tasksCompleted, 2);
-  });
-
-  test('オフなら残ったまま。ユーザーが押すまで動かない', async () => {
-    const h = harness({ autoSendNextMemo: false });
-    const emp = h.manager.createSession({ kind: 'claude' });
-    h.manager.setNextPrompt(emp.id, '次はドキュメント');
-
-    await h.manager.dispatch(emp.id, 'まずコード');
-    await settle();
-
-    assert.equal(h.claude.calls.length, 1);
-    assert.equal(emp.nextPrompt, '次はドキュメント');
-  });
-
-  test('設定画面に現在の値が出る', () => {
-    const h = harness({ autoSendNextMemo: true });
-    h.press(',');
-    assert.ok(h.view().includes('下書きの自動送信'));
-    assert.ok(h.view().includes('オン'));
-  });
-});
-
-describe('復帰との連携（SPEC §10.7）', () => {
-  test('セッション未確定で切れたら、元の指示が下書きに戻る', async () => {
-    const h = harness();
-    const recovery = new RecoveryCoordinator({
-      store: h.store,
-      manager: h.manager,
-      options: { sleep: async () => {} },
-    });
-    const emp = h.manager.createSession({ kind: 'codex' });
-
-    // session_started の前で固まる
-    h.codex.setHangAfter(0);
-    const running = h.manager.dispatch(emp.id, '認証まわりを調べて');
-    await settle();
-    assert.equal(emp.agentSessionId, null);
-
-    h.codex.setHangAfter(null);
-    await recovery.recover();
-    await running;
-
-    assert.equal(emp.nextPrompt, '認証まわりを調べて');
-    assert.equal(emp.state, 'idle');
-
-    // ユーザーが Enter を押せばやり直せる
-    h.codex.setScenario(() => successfulTurn());
-    h.press('\r');
-    await settle();
-    assert.equal(h.codex.calls[1]?.prompt, '認証まわりを調べて');
+    assert.equal(h.claude.calls[0]?.prompt, '控えの指示');
   });
 });

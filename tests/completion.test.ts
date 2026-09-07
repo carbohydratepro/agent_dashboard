@@ -303,7 +303,7 @@ describe('codex では候補を出さない理由を書く', () => {
 
     const screen = new Screen(90, 20, 'none');
     drawConversation(screen, {
-      session: { name: `${kind}-1`, kind, state: 'idle', nextPrompt: '', pendingApprovals: [] } as never,
+      session: { name: `${kind}-1`, kind, state: 'idle', drafts: [], pendingApprovals: [] } as never,
       conversation: conv,
       theme: DEFAULT_THEME,
       now: 0,

@@ -116,7 +116,7 @@ export function tailPath(path: string, width: number): string {
 export function flagsFor(session: Session): string {
   let out = '';
   if (session.workspace.isolation === 'worktree') out += 'W';
-  if (session.nextPrompt.trim() !== '') out += 'P';
+  if (session.drafts.length > 0) out += 'P';
   if (session.pendingApprovals.length > 0) out += '!';
   if (session.subagents.length > 0) out += 'S';
   return out;

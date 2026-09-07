@@ -35,7 +35,7 @@ function fakeSession(over: Partial<Session> = {}): Session {
   return {
     name: 'claude-1',
     state: 'idle',
-    nextPrompt: '',
+    drafts: [],
     pendingApprovals: [],
     ...over,
   } as unknown as Session;

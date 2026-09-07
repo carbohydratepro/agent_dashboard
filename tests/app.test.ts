@@ -217,47 +217,51 @@ describe('下書き', () => {
 
     press(h.app, 'test');
     press(h.app, '\r');
-    assert.equal(emp.nextPrompt, 'test');
+    assert.equal(emp.drafts[0]?.text, 'test');
     assert.equal(h.app.screenId, 'main');
   });
 
-  test('Esc なら保存しない', () => {
+  test('Esc なら足さない', () => {
     const h = harness();
     const emp = h.hire();
     press(h.app, 'e', 'abc', '\x1b');
-    assert.equal(emp.nextPrompt, '');
+    assert.equal(emp.drafts.length, 0);
   });
 
-  test('d で消す', () => {
+  test('p の一覧から d で消す', () => {
     const h = harness();
     const emp = h.hire();
-    h.manager.setNextPrompt(emp.id, '消される予定');
-    press(h.app, 'd');
-    assert.equal(emp.nextPrompt, '');
+    h.manager.addDraft(emp.id, '消される予定');
+    press(h.app, 'p', 'd');
+    assert.equal(emp.drafts.length, 0);
   });
 
-  test('完了直後に下書きがあれば Enter でそのまま送る', async () => {
+  test('完了直後でも Enter では送らない', async () => {
+    // 返答を見て別のことを頼みたい場面がある。勝手に次が出て行くと取り消せない。
     const h = harness();
     const emp = h.hire();
     await h.manager.dispatch(emp.id, '最初の指示');
-    h.manager.setNextPrompt(emp.id, 'ドキュメントも更新して');
+    h.manager.addDraft(emp.id, 'ドキュメントも更新して');
 
     press(h.app, '\r');
     await new Promise((r) => setTimeout(r, 20));
 
-    assert.equal(h.claude.calls[1]?.prompt, 'ドキュメントも更新して');
-    assert.equal(emp.nextPrompt, '');
-    assert.equal(h.app.screenId, 'main', '会話画面には入らない');
+    assert.equal(h.claude.calls.length, 1, '控えは出て行かない');
+    assert.equal(emp.drafts.length, 1);
+    assert.equal(h.app.screenId, 'conversation');
   });
 
-  test('まだ何もしていないセッションは下書きがあっても会話画面に入る', () => {
+  test('p で選べば送る', async () => {
     const h = harness();
     const emp = h.hire();
-    h.manager.setNextPrompt(emp.id, 'いつか読む');
+    await h.manager.dispatch(emp.id, '最初の指示');
+    h.manager.addDraft(emp.id, 'ドキュメントも更新して');
 
-    press(h.app, '\r');
-    assert.equal(h.app.screenId, 'conversation', '下書きがあっても履歴を見に行ける');
-    assert.equal(emp.nextPrompt, 'いつか読む');
+    press(h.app, 'p', '\r');
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(h.claude.calls[1]?.prompt, 'ドキュメントも更新して');
+    assert.equal(emp.drafts.length, 0);
   });
 });
 

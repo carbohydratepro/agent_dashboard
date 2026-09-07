@@ -23,7 +23,7 @@ import type { PanelLine } from './views/panel.ts';
 import { helpLines } from './views/help.ts';
 import { LogBuffer, describeEvent, logLines } from './views/log.ts';
 import { TextInput } from './widgets/textinput.ts';
-import { drawBox, fillRect, textCentered, textClipped, wrapText } from './paint.ts';
+import { drawBox, fillRect, textCentered, textClipped, textRight, wrapText } from './paint.ts';
 import { cursorPosition, dropWidth, padEnd, scrollOffsetFor } from './width.ts';
 import { ROLE_LABEL, ROLES } from '../core/naming.ts';
 import { listExistingSessions, readSessionTranscript } from '../core/sessions.ts';
@@ -55,6 +55,7 @@ export type ScreenId =
   | 'conversation'
   | 'approval'
   | 'draft'
+  | 'drafts'
   | 'hire'
   | 'importSession'
   | 'log'
@@ -157,7 +158,10 @@ export class App {
   #archiveIndex = 0;
   #logFilter: string | null = null;
   #confirm: ConfirmState | null = null;
-  #draft: { sessionId: string; input: TextInput } | null = null;
+  /** editing が null なら新規、あれば その控えの書き換え */
+  #draft: { sessionId: string; input: TextInput; editing: string | null } | null = null;
+  /** 控えの一覧で選んでいる位置 */
+  #draftIndex = 0;
   #hire: HireState | null = null;
   #importSession: ImportState | null = null;
   #approvalIndex = 0;
@@ -358,6 +362,11 @@ export class App {
         this.#drawDraft();
         return;
 
+      case 'drafts':
+        this.#drawMainBeneath();
+        this.#drawDrafts();
+        return;
+
       case 'hire':
         this.#drawMainBeneath();
         this.#drawHire();
@@ -541,6 +550,9 @@ export class App {
       case 'draft':
         this.#draftKey(k);
         break;
+      case 'drafts':
+        this.#draftsKey(k);
+        break;
       case 'hire':
         this.#hireKey(k);
         break;
@@ -702,6 +714,76 @@ export class App {
       fg: theme.textDim,
       bg: theme.panelBg,
     });
+  }
+
+  /** 控えの一覧。選んで送る。 */
+  #drawDrafts(): void {
+    const session = this.selectedSession;
+    if (!session || session.drafts.length === 0) {
+      this.screenId = 'main';
+      return;
+    }
+    const theme = this.theme;
+    const w = Math.min(88, this.screen.width - 8);
+    const rows = Math.min(session.drafts.length, 12);
+    const h = rows + 6;
+    const x = Math.floor((this.screen.width - w) / 2);
+    const y = Math.floor((this.screen.height - h) / 2);
+
+    drawBox(this.screen, x, y, w, h, {
+      style: { fg: theme.accent, bg: theme.panelBg },
+      title: `次に送るプロンプト — ${session.name}`,
+      titleStyle: { fg: theme.accent, bg: theme.panelBg, bold: true },
+      fill: theme.panelBg,
+    });
+
+    const busy = BUSY_STATES.has(session.state);
+    textClipped(
+      this.screen,
+      x + 2,
+      y + 1,
+      w - 4,
+      busy ? `${session.name} は実行中です。終わってから送れます。` : '選んだものだけを送ります。',
+      { fg: busy ? theme.gauge.high : theme.textDim, bg: theme.panelBg },
+    );
+
+    // 選択が見えるように窓をずらす
+    const start = Math.max(0, Math.min(this.#draftIndex - rows + 1, session.drafts.length - rows));
+    for (let i = 0; i < rows; i += 1) {
+      const draft = session.drafts[start + i];
+      if (!draft) break;
+      const selected = start + i === this.#draftIndex;
+      const bg = selected ? theme.rowAlt : theme.panelBg;
+      const top = y + 3 + i;
+
+      fillRect(this.screen, x + 1, top, w - 2, 1, bg);
+      this.screen.text(x + 2, top, selected ? '▸ ' : '  ', {
+        fg: theme.accent,
+        bg,
+        bold: true,
+      });
+      // 1 件 1 行。全文は [e] で開けば見える。
+      textClipped(this.screen, x + 4, top, w - 6, draft.text.replace(/\s+/g, ' ').trim(), {
+        fg: selected ? theme.textBright : theme.text,
+        bg,
+      });
+    }
+
+    if (session.drafts.length > rows) {
+      textRight(this.screen, x, y + h - 3, w - 2, `${this.#draftIndex + 1}/${session.drafts.length}`, {
+        fg: theme.textDim,
+        bg: theme.panelBg,
+      });
+    }
+
+    textCentered(
+      this.screen,
+      x + 1,
+      y + h - 2,
+      w - 2,
+      '[↑↓] 選ぶ   [Enter] 送る   [e] 直す   [n] 足す   [d] 消す   [Esc] 閉じる',
+      { fg: theme.textDim, bg: theme.panelBg },
+    );
   }
 
   #drawDraft(): void {
@@ -969,7 +1051,6 @@ export class App {
       { text: `スロット数              ${this.store.dashboard.slotCount}`, color: theme.text },
       { text: `コンテキスト窓          ${c.contextWindow.toLocaleString('en-US')}`, color: theme.text },
       { text: `逼迫とみなす比率        ${Math.round(c.contextRestThreshold * 100)}%`, color: theme.text },
-      { text: `下書きの自動送信        ${c.autoSendNextMemo ? 'オン' : 'オフ'}`, color: theme.text },
       { text: `常に許可するツール      ${c.alwaysAllowedTools.join(', ') || '（なし）'}`, color: theme.text },
       { text: `既定の作業ディレクトリ  ${c.defaultCwd}`, color: theme.text },
       { text: '' },
@@ -1094,8 +1175,8 @@ export class App {
         case 'e':
           this.#openDraft();
           return;
-        case 'd':
-          this.#clearDraft();
+        case 'p':
+          this.#openDrafts();
           return;
         case 'n':
           this.#openHire();
@@ -1161,29 +1242,37 @@ export class App {
       this.#openScreen('approval');
       return;
     }
-    // 何かを終えて手が空いていれば、下書きをそのまま次の指示として送る（SPEC §12.1）
-    if (canSendDraft(session)) {
-      this.#send(session, null);
-      return;
-    }
+    // 控えがあっても Enter では送らない。会話を開くだけ。
+    // 作業が終わったところで別のことを頼みたくなるのが普通で、
+    // 勝手に次が出て行くと取り消せない。送るのは [p] で選んだときだけ。
     this.#completion = null;
     this.#openScreen('conversation');
   }
 
-  #openDraft(): void {
+  /** 控えを 1 件書く。editing を渡すとその中身を直す。 */
+  #openDraft(editing: string | null = null): void {
     const session = this.selectedSession;
     if (!session) return;
     const input = new TextInput();
-    input.setValue(session.nextPrompt);
-    this.#draft = { sessionId: session.id, input };
+    if (editing) {
+      const draft = session.drafts.find((d) => d.id === editing);
+      if (!draft) return;
+      input.setValue(draft.text);
+    }
+    this.#draft = { sessionId: session.id, input, editing };
     this.#openScreen('draft');
   }
 
-  #clearDraft(): void {
+  /** 控えの一覧。選んで送る／直す／消す。 */
+  #openDrafts(): void {
     const session = this.selectedSession;
-    if (!session || session.nextPrompt === '') return;
-    this.manager.setNextPrompt(session.id, '');
-    this.#notify('下書きを消しました');
+    if (!session) return;
+    if (session.drafts.length === 0) {
+      this.#openDraft();
+      return;
+    }
+    this.#draftIndex = Math.min(this.#draftIndex, session.drafts.length - 1);
+    this.#openScreen('drafts');
   }
 
   #openHire(): void {
@@ -1477,9 +1566,8 @@ export class App {
     this.#notify(all ? '全員の再接続を試みます' : '再接続を試みます');
   }
 
-  /** prompt が null なら下書きを送る */
-  #send(session: Session, prompt: string | null): void {
-    const run = prompt === null ? this.manager.sendNextPrompt(session.id) : this.manager.dispatch(session.id, prompt);
+  #send(session: Session, prompt: string): void {
+    const run = this.manager.dispatch(session.id, prompt);
     run.catch((err: unknown) => {
       this.#notify(err instanceof Error ? err.message : String(err), this.theme.gauge.critical);
     });
@@ -1510,13 +1598,71 @@ export class App {
       return;
     }
     if (k.name === 'enter') {
-      this.manager.setNextPrompt(state.sessionId, state.input.value.trim());
+      const text = state.input.value.trim();
+      if (state.editing) {
+        this.manager.updateDraft(state.sessionId, state.editing, text);
+        this.#notify(text === '' ? '控えを消しました' : '控えを直しました');
+      } else if (text !== '') {
+        this.manager.addDraft(state.sessionId, text);
+        this.#notify('控えに足しました');
+      }
+      const back = state.editing ? 'drafts' : 'main';
       this.#draft = null;
-      this.#openScreen('main');
-      this.#notify('下書きを保存しました');
+      const session = this.store.find(state.sessionId);
+      this.#openScreen(back === 'drafts' && (session?.drafts.length ?? 0) > 0 ? 'drafts' : 'main');
       return;
     }
     state.input.handleKey(k);
+  }
+
+  /** 控えの一覧のキー操作 */
+  #draftsKey(k: Key): void {
+    const session = this.selectedSession;
+    const drafts = session?.drafts ?? [];
+    if (!session || drafts.length === 0) {
+      this.#openScreen('main');
+      return;
+    }
+    this.#draftIndex = Math.min(this.#draftIndex, drafts.length - 1);
+    const current = drafts[this.#draftIndex]!;
+
+    if (k.name === 'escape') {
+      this.#openScreen('main');
+      return;
+    }
+    if (k.name === 'down' || (k.name === 'char' && k.ch === 'j')) {
+      this.#draftIndex = Math.min(drafts.length - 1, this.#draftIndex + 1);
+      return;
+    }
+    if (k.name === 'up' || (k.name === 'char' && k.ch === 'k')) {
+      this.#draftIndex = Math.max(0, this.#draftIndex - 1);
+      return;
+    }
+    if (k.name === 'enter') {
+      if (BUSY_STATES.has(session.state)) {
+        this.#notify(`${session.name} は実行中です`, this.theme.gauge.high);
+        return;
+      }
+      this.manager.sendDraft(session.id, current.id).catch((err: unknown) => {
+        this.#notify(err instanceof Error ? err.message : String(err), this.theme.gauge.critical);
+      });
+      this.#openScreen('conversation');
+      return;
+    }
+    if (k.name === 'char' && k.ch === 'e') {
+      this.#openDraft(current.id);
+      return;
+    }
+    if (k.name === 'char' && k.ch === 'n') {
+      this.#openDraft();
+      return;
+    }
+    if (k.name === 'char' && (k.ch === 'd' || k.ch === 'x')) {
+      this.manager.removeDraft(session.id, current.id);
+      this.#draftIndex = Math.max(0, Math.min(this.#draftIndex, session.drafts.length - 1));
+      if (session.drafts.length === 0) this.#openScreen('main');
+      return;
+    }
   }
 
   #hireKey(k: Key): void {
@@ -1638,11 +1784,11 @@ export class App {
       return;
     }
     if (k.name === 'enter') {
+      // 空のまま Enter を押しても何も送らない。控えは選んだときだけ出て行く。
       const text = conv.input.submit();
       if (text !== null) {
         if (!this.#handleLocalCommand(session, conv, text)) return;
       }
-      else if (session.nextPrompt.trim() !== '') this.#send(session, null);
       this.#completion = null;
       conv.scrollToBottom();
       return;
@@ -1668,6 +1814,11 @@ export class App {
       return;
     }
     // 入力欄では文字を奪わない。日本語を打っている最中に画面が飛ばないように。
+    // 会話中でも控えを選んで送れる
+    if (k.name === 'char' && k.ch === 'p' && k.alt) {
+      this.#openDrafts();
+      return;
+    }
     if (k.name === 'char' && k.ch === 'e' && k.alt) {
       this.#openDraft();
       return;

@@ -35,6 +35,12 @@ export const BUSY_STATES: ReadonlySet<SessionState> = new Set<SessionState>([
 /** システムプロンプトに追記する役割の型。見た目ではなく実挙動に効く。 */
 export type Role = 'backend' | 'frontend' | 'infra' | 'research' | 'qa' | 'general';
 
+export interface Draft {
+  id: string;
+  text: string;
+  updatedAt: number;
+}
+
 export interface Workspace {
   requestedCwd: string;
   actualCwd: string;
@@ -156,9 +162,11 @@ export interface Session {
   workspace: Workspace;
   recovery: Recovery;
 
-  /** 次に送るプロンプトの下書き */
-  nextPrompt: string;
-  nextPromptUpdatedAt: number;
+  /**
+   * 次に送るプロンプトの控え。順番は持たない。
+   * 送るのは選んで送ったときだけで、勝手には出て行かない。
+   */
+  drafts: Draft[];
 
   /** 思考量のライブ値。claude の thinking_tokens 由来。 */
   thinkingTokens: number;

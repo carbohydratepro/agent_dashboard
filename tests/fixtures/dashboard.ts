@@ -125,7 +125,7 @@ function decorate(session: Session, d: Decoration): void {
   session.stats.totalTokensIn = Math.round(d.tokens * 0.9);
   session.stats.totalTokensOut = Math.round(d.tokens * 0.1);
   session.uptime.activeMs = d.activeMs;
-  if (d.draft) session.nextPrompt = d.draft;
+  if (d.draft) session.drafts = [{ id: `draft-${session.id}`, text: d.draft, updatedAt: 0 }];
   if (d.worktree) {
     session.workspace.isolation = 'worktree';
     session.workspace.branch = d.worktree;

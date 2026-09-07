@@ -10,6 +10,7 @@ import type {
   AgentEvent,
   AgentKind,
   ApprovalRequest,
+  Draft,
   RateLimitInfo,
   Role,
   Session,
@@ -41,7 +42,6 @@ export interface ManagerConfig {
   /** この比率を超えたら resting に倒す（SPEC §17.1） */
   contextRestThreshold: number;
   /** タスク完了時に次やることメモを自動送信するか（既定オフ、SPEC §12.1） */
-  autoSendNextMemo: boolean;
   defaultCwd: string;
   /** 承認待ち承認後に送るプロンプト。実機で動作確認済み（SPEC §5.1） */
   approvalPrompt: string;
@@ -52,7 +52,6 @@ export interface ManagerConfig {
 const DEFAULT_CONFIG: ManagerConfig = {
   contextWindow: 200_000,
   contextRestThreshold: 0.85,
-  autoSendNextMemo: false,
   defaultCwd: process.cwd(),
   approvalPrompt: '承認しました。先ほどの操作をそのまま実行してください。',
   alwaysAllowedTools: [],
@@ -203,8 +202,7 @@ export class SessionManager {
         interruptedTaskId: null,
         networkFingerprintAtStart: null,
       },
-      nextPrompt: '',
-      nextPromptUpdatedAt: 0,
+      drafts: [],
       thinkingTokens: 0,
       context: {
         usedTokens: 0,
@@ -316,20 +314,51 @@ export class SessionManager {
   // 次やることメモ（SPEC §12）
   // -------------------------------------------------------------------------
 
-  setNextPrompt(sessionId: string, memo: string): void {
+  /** 控えを 1 件足す。空文字は足さない。 */
+  addDraft(sessionId: string, text: string): Draft | null {
+    const body = text.trim();
+    if (body === '') return null;
     const session = this.store.require(sessionId);
-    session.nextPrompt = memo;
-    session.nextPromptUpdatedAt = this.#clock.now();
+    const draft: Draft = { id: this.#ids.uuid(), text: body, updatedAt: this.#clock.now() };
+    session.drafts.push(draft);
+    this.store.emit({ t: 'session_changed', sessionId });
+    return draft;
+  }
+
+  /** 中身を書き換える。空にしたら消す。 */
+  updateDraft(sessionId: string, draftId: string, text: string): void {
+    const session = this.store.require(sessionId);
+    const draft = session.drafts.find((d) => d.id === draftId);
+    if (!draft) return;
+    const body = text.trim();
+    if (body === '') {
+      this.removeDraft(sessionId, draftId);
+      return;
+    }
+    draft.text = body;
+    draft.updatedAt = this.#clock.now();
     this.store.emit({ t: 'session_changed', sessionId });
   }
 
-  /** メモの内容をそのまま指示として送り、メモをクリアする */
-  async sendNextPrompt(sessionId: string): Promise<Task> {
+  removeDraft(sessionId: string, draftId: string): void {
     const session = this.store.require(sessionId);
-    const draft = session.nextPrompt.trim();
-    if (!draft) throw new Error('下書きが空です');
-    this.setNextPrompt(sessionId, '');
-    return this.dispatch(sessionId, draft);
+    const before = session.drafts.length;
+    session.drafts = session.drafts.filter((d) => d.id !== draftId);
+    if (session.drafts.length !== before) this.store.emit({ t: 'session_changed', sessionId });
+  }
+
+  /**
+   * 控えを 1 件選んで送る。送れたらその控えは消す。
+   *
+   * 自動では送らない。作業が終わったところで別のことを頼みたくなるのが普通で、
+   * 勝手に次が出て行くと取り消せない。
+   */
+  async sendDraft(sessionId: string, draftId: string): Promise<Task> {
+    const session = this.store.require(sessionId);
+    const draft = session.drafts.find((d) => d.id === draftId);
+    if (!draft) throw new Error('その控えはもうありません');
+    this.removeDraft(sessionId, draft.id);
+    return this.dispatch(sessionId, draft.text);
   }
 
   // -------------------------------------------------------------------------
@@ -432,21 +461,9 @@ export class SessionManager {
   // 指示の実行
   // -------------------------------------------------------------------------
 
-  /**
-   * 1 ターンを実行する。
-   * autoSendNextMemo が有効なら、完了後にメモが残っている限り続けて実行する。
-   */
+  /** 1 ターンを実行する。控えが残っていても、続けて送ることはしない。 */
   async dispatch(sessionId: string, prompt: string, opts: DispatchOpts = {}): Promise<Task> {
-    let task = await this.#runTurn(sessionId, prompt, opts);
-
-    while (this.#config.autoSendNextMemo && task.status === 'done') {
-      const session = this.store.require(sessionId);
-      const draft = session.nextPrompt.trim();
-      if (!draft) break;
-      this.setNextPrompt(sessionId, '');
-      task = await this.#runTurn(sessionId, draft, {});
-    }
-    return task;
+    return this.#runTurn(sessionId, prompt, opts);
   }
 
   async #runTurn(sessionId: string, prompt: string, opts: DispatchOpts): Promise<Task> {

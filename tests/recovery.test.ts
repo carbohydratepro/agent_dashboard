@@ -353,14 +353,14 @@ describe('リトライと諦め（SPEC §10.3 / §10.7）', () => {
 
     assert.deepEqual(report.skipped, [emp.id]);
     assert.equal(emp.state, 'idle');
-    assert.equal(emp.nextPrompt, '認証まわりを調べて', '社長が Enter でやり直せる');
+    assert.equal(emp.drafts[0]?.text, '認証まわりを調べて', '控えに戻ってやり直せる');
     assert.equal(h.codex.calls.length, 1, '復帰の指示は送っていない');
   });
 
-  test('既にメモがあれば上書きしない', async () => {
+  test('先にあった控えを潰さない', async () => {
     const h = harness();
     const emp = h.manager.createSession({ kind: 'codex' });
-    h.manager.setNextPrompt(emp.id, '先に書いておいたメモ');
+    h.manager.addDraft(emp.id, '先に書いておいた控え');
 
     h.codex.setHangAfter(0);
     const running = h.manager.dispatch(emp.id, '認証まわりを調べて');
@@ -370,7 +370,11 @@ describe('リトライと諦め（SPEC §10.3 / §10.7）', () => {
     await h.coordinator.recover();
     await running;
 
-    assert.equal(emp.nextPrompt, '先に書いておいたメモ');
+    assert.deepEqual(
+      emp.drafts.map((d) => d.text),
+      ['先に書いておいた控え', '認証まわりを調べて'],
+      '並べて残す。どちらを送るかは選べる。',
+    );
   });
 });
 

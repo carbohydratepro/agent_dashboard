@@ -105,19 +105,22 @@ describe('初回起動から一周', () => {
     assert.ok(text.includes('直しました'));
     assert.equal(emp.stats.tasksCompleted, 1);
 
-    // 下書きを書く
+    // 控えを 2 件書く
     h.press('\x1b');
     h.press('e', 'テストも書いて', '\r');
-    assert.equal(emp.nextPrompt, 'テストも書いて');
+    h.press('e', 'ドキュメントも', '\r');
+    assert.deepEqual(emp.drafts.map((d) => d.text), ['テストも書いて', 'ドキュメントも']);
 
-    // オフィスの Enter でそのまま送る
-    h.press('\r');
+    // 一覧から選んで送る（順番ではなく 2 件目）
+    h.press('p', '\x1b[B', '\r');
     await h.finish(emp.id);
-    assert.equal(h.claude.calls[1]?.prompt, 'テストも書いて');
+    assert.equal(h.claude.calls[1]?.prompt, 'ドキュメントも');
     assert.equal(emp.stats.tasksCompleted, 2);
+    assert.deepEqual(emp.drafts.map((d) => d.text), ['テストも書いて'], '選ばなかったぶんは残る');
 
     // 全部の画面を開いても落ちない
-    for (const key of ['L', 'p', '$', ',', '?']) {
+    h.press('\x1b');
+    for (const key of ['L', 'a', 's', ',', '?']) {
       h.press(key);
       assert.ok(h.view().length > 0);
       h.press('\x1b');
@@ -140,7 +143,7 @@ describe('初回起動から一周', () => {
 
     assert.equal(restored.id, emp.id);
     assert.equal(restored.name, emp.name);
-    assert.equal(restored.nextPrompt, '次の作業');
+    assert.deepEqual(restored.drafts.map((d) => d.text), ['次の作業']);
     assert.equal(restored.stats.tasksCompleted, 1);
     assert.equal(restored.agentSessionId, emp.agentSessionId);
 

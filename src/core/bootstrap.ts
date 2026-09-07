@@ -146,7 +146,6 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
     config: {
       contextWindow: config.defaults.claude.contextWindow,
       contextRestThreshold: config.thresholds.contextRest,
-      autoSendNextMemo: config.behavior.autoSendNextMemo,
       defaultCwd: config.defaults.cwd,
       alwaysAllowedTools: [...config.approvals.alwaysAllow],
     },
@@ -167,7 +166,12 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
     // 6. 前回の作業を中断扱いにし、プロンプトを下書きへ戻す
     if (unfinishedPrompt) {
       session.stats.tasksInterrupted += 1;
-      if (session.nextPrompt.trim() === '') session.nextPrompt = unfinishedPrompt;
+      // 控えに積み直す。勝手に送り直さず、選んで送れる形で残す。
+      session.drafts.push({
+        id: `recovered-${session.id}`,
+        text: unfinishedPrompt,
+        updatedAt: now(),
+      });
     }
   }
   warnings.push(...manager.loadSessions(loaded.map((l) => l.session)));

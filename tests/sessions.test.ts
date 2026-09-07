@@ -601,7 +601,7 @@ describe('復元（SPEC §7.3）', () => {
     const h = manager();
     const emp = h.manager.createSession({ kind: 'claude', agentSessionId: 'sess' });
     emp.stats.tasksCompleted = 18;
-    h.manager.setNextPrompt(emp.id, '続きをやる');
+    h.manager.addDraft(emp.id, '続きをやる');
     h.manager.archiveSession(emp.id);
 
     assert.equal(h.store.active().length, 0);
@@ -612,7 +612,7 @@ describe('復元（SPEC §7.3）', () => {
     assert.equal(back.state, 'offline');
     assert.equal(back.agentSessionId, 'sess', '会話への紐が残る');
     assert.equal(back.stats.tasksCompleted, 18);
-    assert.equal(back.nextPrompt, '続きをやる', '下書きも残る');
+    assert.equal(back.drafts[0]?.text, '続きをやる', '控えも残る');
     assert.equal(h.store.active().length, 1);
   });
 

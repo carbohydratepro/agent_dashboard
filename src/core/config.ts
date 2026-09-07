@@ -22,7 +22,6 @@ export interface DashboardConfig {
     sleepDetectThresholdMs: number;
     autoRecover: boolean;
   };
-  behavior: { autoSendNextMemo: boolean };
   notifications: { bell: boolean };
 
   ui: {
@@ -91,7 +90,6 @@ export function defaultConfig(): DashboardConfig {
       sleepDetectThresholdMs: 60_000,
       autoRecover: true,
     },
-    behavior: { autoSendNextMemo: false },
     notifications: { bell: true },
 
     ui: {

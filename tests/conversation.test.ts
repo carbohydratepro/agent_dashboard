@@ -313,7 +313,7 @@ describe('自分の指示と回答を色で分ける', () => {
 
     const screen = new Screen(60, 16, 'none');
     drawConversation(screen, {
-      session: { name: 'claude-1', state: 'idle', nextPrompt: '', pendingApprovals: [] } as never,
+      session: { name: 'claude-1', state: 'idle', drafts: [], pendingApprovals: [] } as never,
       conversation: conv,
       theme: DEFAULT_THEME,
       now: 0,
@@ -339,7 +339,7 @@ describe('動いていることが分かる', () => {
         name: 'claude-1',
         kind: 'claude',
         state: over.state ?? 'thinking',
-        nextPrompt: '',
+        drafts: [],
         pendingApprovals: [],
         currentTask: { id: 't1', startedAt: 0, events: over.events ?? [] },
       } as never,
@@ -426,7 +426,7 @@ describe('動いていることが分かる', () => {
         name: 'claude-1',
         kind: 'claude',
         state: 'thinking',
-        nextPrompt: '',
+        drafts: [],
         pendingApprovals: [],
         currentTask: { id: 't1', startedAt: 0, events: [] },
       } as never,

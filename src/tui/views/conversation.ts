@@ -277,7 +277,7 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
   // 枠の上下 2 行ぶんを足す。3 未満だと中身を書く場所が無くなる。
   const inputLineCount = conv.input.value.split('\n').length;
   const inputHeight = Math.min(7, Math.max(3, inputLineCount + 2));
-  const memoRow = session.nextPrompt.trim() !== '' ? 1 : 0;
+  const memoRow = session.drafts.length > 0 ? 1 : 0;
 
   // 動いている間は 1 行使って、止まっているのか考えているのかを示す。
   // 送ってから最初の出力が届くまで何十秒も無音になることがあり、
@@ -393,14 +393,18 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
     y += 1;
   }
 
-  // メモの提示
+  // 控えの提示。Enter では送らない。選んで送る。
   if (memoRow) {
-    const first = session.nextPrompt.split('\n')[0] ?? '';
-    textClipped(screen, 1, y, screen.width - 20, `[m] 次: ${first}`, {
+    const first = (session.drafts[0]?.text ?? '').replace(/\s+/g, ' ').trim();
+    const more = session.drafts.length > 1 ? `  ほか ${session.drafts.length - 1} 件` : '';
+    textClipped(screen, 1, y, screen.width - 22, `控え: ${first}${more}`, {
       fg: theme.accent,
       bg: theme.bg,
     });
-    textRight(screen, 0, y, screen.width - 1, '[Enter で送信]', { fg: theme.textDim, bg: theme.bg });
+    textRight(screen, 0, y, screen.width - 1, '[Alt+p] 選んで送る', {
+      fg: theme.textDim,
+      bg: theme.bg,
+    });
     y += 1;
   }
 

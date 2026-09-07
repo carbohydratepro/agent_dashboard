@@ -405,52 +405,62 @@ describe('稼働時間', () => {
 // ---------------------------------------------------------------------------
 
 describe('次に送るプロンプト（SPEC §12）', () => {
-  test('下書きを送ると消える', async () => {
+  test('選んで送ると、その控えだけ消える', async () => {
     const h = harness();
     h.claude.setScenario(() => successfulTurn());
     const emp = h.manager.createSession({ kind: 'claude' });
     await h.manager.dispatch(emp.id, '最初の指示');
 
-    h.manager.setNextPrompt(emp.id, 'テストも書いて');
-    assert.equal(emp.nextPrompt, 'テストも書いて');
+    h.manager.addDraft(emp.id, 'テストも書いて');
+    const second = h.manager.addDraft(emp.id, 'ドキュメントも')!;
 
-    await h.manager.sendNextPrompt(emp.id);
-    assert.equal(h.claude.calls[1]!.prompt, 'テストも書いて');
-    assert.equal(emp.nextPrompt, '', '送ったらクリアされる');
+    await h.manager.sendDraft(emp.id, second.id);
+
+    assert.equal(h.claude.calls[1]!.prompt, 'ドキュメントも');
+    assert.deepEqual(
+      emp.drafts.map((d) => d.text),
+      ['テストも書いて'],
+      '選ばなかったほうは残る',
+    );
   });
 
-  test('空の下書きは送れない', async () => {
+  test('無い控えは送れない', async () => {
     const h = harness();
     const emp = h.manager.createSession({ kind: 'claude' });
-    await assert.rejects(() => h.manager.sendNextPrompt(emp.id), /下書きが空です/);
+    await assert.rejects(() => h.manager.sendDraft(emp.id, 'ない'), /もうありません/);
   });
 
-  test('自動送信が有効なら完了後に続けて実行する', async () => {
-    const h = harness({ autoSendNextMemo: true });
+  test('完了しても控えは自動で出て行かない', async () => {
+    // 返答を見て別のことを頼みたい場面がある。勝手に送られると取り消せない。
+    const h = harness();
     h.claude.setScenario(() => successfulTurn());
     const emp = h.manager.createSession({ kind: 'claude' });
 
-    h.manager.setNextPrompt(emp.id, '次はドキュメント');
+    h.manager.addDraft(emp.id, '次はドキュメント');
     await h.manager.dispatch(emp.id, 'まずコード');
 
     assert.deepEqual(
       h.claude.calls.map((c) => c.prompt),
-      ['まずコード', '次はドキュメント'],
+      ['まずコード'],
     );
-    assert.equal(emp.nextPrompt, '');
-    assert.equal(emp.stats.tasksCompleted, 2);
+    assert.equal(emp.drafts.length, 1);
+    assert.equal(emp.stats.tasksCompleted, 1);
   });
 
-  test('自動送信が無効なら完了してもメモは残ったまま', async () => {
-    const h = harness({ autoSendNextMemo: false });
-    h.claude.setScenario(() => successfulTurn());
+  test('空文字は控えにならない', () => {
+    const h = harness();
     const emp = h.manager.createSession({ kind: 'claude' });
+    assert.equal(h.manager.addDraft(emp.id, '   '), null);
+    assert.equal(emp.drafts.length, 0);
+  });
 
-    h.manager.setNextPrompt(emp.id, '次はドキュメント');
-    await h.manager.dispatch(emp.id, 'まずコード');
+  test('中身を空にすると消える', () => {
+    const h = harness();
+    const emp = h.manager.createSession({ kind: 'claude' });
+    const draft = h.manager.addDraft(emp.id, 'あとで')!;
 
-    assert.equal(h.claude.calls.length, 1);
-    assert.equal(emp.nextPrompt, '次はドキュメント');
+    h.manager.updateDraft(emp.id, draft.id, '');
+    assert.equal(emp.drafts.length, 0);
   });
 });
 

@@ -75,21 +75,21 @@ describe('設定', () => {
   test('保存した値が読み戻る', () => {
     const p = new Persistence(root);
     const config = defaultConfig();
-    config.behavior.autoSendNextMemo = true;
     config.ui.slotCount = 4;
+    config.thresholds.contextRest = 0.7;
     p.saveConfig(config);
 
     const loaded = new Persistence(root).loadConfig();
-    assert.equal(loaded.behavior.autoSendNextMemo, true);
     assert.equal(loaded.ui.slotCount, 4);
+    assert.equal(loaded.thresholds.contextRest, 0.7);
   });
 
   test('知らないキーは無視し、足りないキーは既定値で埋める', () => {
     const merged = mergeConfig(defaultConfig(), {
-      behavior: { autoSendNextMemo: true },
+      thresholds: { contextRest: 0.7 },
       未知のセクション: { x: 1 },
     });
-    assert.equal(merged.behavior.autoSendNextMemo, true);
+    assert.equal(merged.thresholds.contextRest, 0.7);
     assert.equal(merged.ui.slotCount, 8, '触っていないキーは既定値のまま');
     assert.equal('未知のセクション' in merged, false);
   });
@@ -105,7 +105,7 @@ describe('セッションの保存と読み戻し', () => {
     const a = session();
     const emp = a.manager.createSession({ kind: 'claude', name: 'リク', role: 'backend' });
     await a.manager.dispatch(emp.id, 'やって');
-    a.manager.setNextPrompt(emp.id, '次はテスト');
+    a.manager.addDraft(emp.id, '次はテスト');
     await settle();
 
     const b = session();
@@ -116,7 +116,7 @@ describe('セッションの保存と読み戻し', () => {
     assert.equal(restored.name, emp.name);
     assert.equal(restored.role, 'backend');
     assert.equal(restored.agentSessionId, emp.agentSessionId, '会話への紐が残る');
-    assert.equal(restored.nextPrompt, '次はテスト');
+    assert.equal(restored.drafts[0]?.text, '次はテスト');
     assert.equal(restored.stats.tasksCompleted, 1);
   });
 
@@ -302,14 +302,14 @@ describe('起動シーケンス（SPEC §14.3）', () => {
 
     const restored = boot.store.active()[0]!;
     assert.equal(restored.currentTask?.status, 'interrupted');
-    assert.equal(restored.nextPrompt, '途中だった指示', '社長がやり直せる');
+    assert.equal(restored.drafts[0]?.text, '途中だった指示', '控えに戻ってやり直せる');
     assert.equal(restored.stats.tasksInterrupted, 1);
   });
 
-  test('既に下書きがあれば上書きしない', async () => {
+  test('先にあった控えを潰さない', async () => {
     const a = session();
     const emp = a.manager.createSession({ kind: 'claude' });
-    emp.nextPrompt = '先に書いた下書き';
+    a.manager.addDraft(emp.id, '先に書いた控え');
     emp.currentTask = {
       id: 'task-9', sessionId: emp.id, prompt: '途中だった指示', startedAt: 0,
       endedAt: null, status: 'running', events: [], summary: null, recoveredFrom: null,
@@ -317,7 +317,11 @@ describe('起動シーケンス（SPEC §14.3）', () => {
     a.persistence.saveSession(emp);
 
     const boot = await bootstrap({ root, drivers: {}, skipVersionCheck: true });
-    assert.equal(boot.store.active()[0]!.nextPrompt, '先に書いた下書き');
+    assert.deepEqual(
+      boot.store.active()[0]!.drafts.map((d) => d.text),
+      ['先に書いた控え', '途中だった指示'],
+      '並べて残す',
+    );
   });
 
   test('worktree が消えていたら隔離を解除して警告する', async () => {
@@ -362,13 +366,11 @@ describe('起動シーケンス（SPEC §14.3）', () => {
   test('設定の値がマネージャに渡る', async () => {
     const p = new Persistence(root);
     const config = defaultConfig();
-    config.behavior.autoSendNextMemo = true;
     config.approvals.alwaysAllow = ['Edit'];
     config.thresholds.contextRest = 0.7;
     p.saveConfig(config);
 
     const boot = await bootstrap({ root, drivers: {}, skipVersionCheck: true });
-    assert.equal(boot.manager.config.autoSendNextMemo, true);
     assert.deepEqual(boot.manager.config.alwaysAllowedTools, ['Edit']);
     assert.equal(boot.manager.config.contextRestThreshold, 0.7);
   });
