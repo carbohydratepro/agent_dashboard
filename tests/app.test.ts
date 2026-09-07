@@ -415,3 +415,74 @@ describe('会話モードのキー', () => {
     assert.ok(h.view().includes('会話'));
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('終わったことが一覧で分かる', () => {
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+
+  /** 一覧のその行だけを見る。詳細パネルにも ✓ が出るので混ざらないように。 */
+  function tableRow(h: ReturnType<typeof harness>, name: string): string {
+    return h.view().split('\n').find((r) => r.includes(name) && r.includes('%')) ?? '';
+  }
+
+  test('完了すると印が付く', async () => {
+    const h = harness();
+    const emp = h.hire();
+    assert.equal(emp.unseenResult, null);
+
+    await h.manager.dispatch(emp.id, 'やって');
+    await settle();
+
+    assert.equal(emp.unseenResult, 'done');
+    assert.ok(tableRow(h, emp.name).includes('✓'), '一覧の行に出る');
+  });
+
+  test('失敗も区別して付く', async () => {
+    const h = harness();
+    const emp = h.hire();
+    h.claude.setScenario(() => [{ t: 'turn_end', ok: false, result: 'こわれた' }]);
+
+    await h.manager.dispatch(emp.id, 'やって');
+    await settle();
+
+    assert.equal(emp.unseenResult, 'failed');
+    assert.ok(tableRow(h, emp.name).includes('×'));
+  });
+
+  test('会話を開くと消える', async () => {
+    const h = harness();
+    const emp = h.hire();
+    await h.manager.dispatch(emp.id, 'やって');
+    await settle();
+    assert.equal(emp.unseenResult, 'done');
+
+    press(h.app, '\r');
+    assert.equal(emp.unseenResult, null, '見たので消える');
+
+    press(h.app, '\x1b');
+    assert.equal(tableRow(h, emp.name).includes('✓'), false);
+  });
+
+  test('次を頼んだ時点でも消える', async () => {
+    const h = harness();
+    const emp = h.hire();
+    await h.manager.dispatch(emp.id, '一回目');
+    await settle();
+
+    const running = h.manager.dispatch(emp.id, '二回目');
+    assert.equal(emp.unseenResult, null, '走り出した時点で前の結果は関係ない');
+    await running;
+  });
+
+  test('実行中は動いている印を優先する', async () => {
+    const h = harness();
+    const emp = h.hire();
+    await h.manager.dispatch(emp.id, 'やって');
+    await settle();
+
+    h.manager.forceState(emp.id, 'working');
+    emp.unseenResult = 'done';
+    assert.equal(tableRow(h, emp.name).includes('✓'), false, '動いている最中に完了印は出さない');
+  });
+});

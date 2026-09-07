@@ -530,6 +530,11 @@ export class App {
   #openScreen(id: ScreenId): void {
     this.screenId = id;
     this.#scroll = 0;
+    // 会話を開いたら、その結果はもう見たことにする（一覧の印を消す）
+    if (id === 'conversation') {
+      const session = this.selectedSession;
+      if (session) this.manager.markResultSeen(session.id);
+    }
   }
 
   // -------------------------------------------------------------------------

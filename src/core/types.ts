@@ -168,6 +168,12 @@ export interface Session {
    */
   drafts: Draft[];
 
+  /**
+   * まだ見ていない結果。ターンが終わると付き、会話を開くと消える。
+   * 一覧を眺めているだけで「終わったもの」が拾えるようにするため。
+   */
+  unseenResult: 'done' | 'failed' | null;
+
   /** 思考量のライブ値。claude の thinking_tokens 由来。 */
   thinkingTokens: number;
 

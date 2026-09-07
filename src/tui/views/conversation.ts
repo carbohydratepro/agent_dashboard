@@ -314,6 +314,17 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
     const line = lines[start + i];
     if (!line) break;
     const y = bodyTop + i;
+
+    // 先頭行は、上にまだ続きがあるかどうかの表示に使う。
+    // 何も出さないと「これで全部」に見えて、遡れることに気づけない。
+    if (i === 0 && start > 0) {
+      textClipped(screen, 1, y, screen.width - 2, `↑ さらに ${start} 行  [PgUp]`, {
+        fg: theme.textDim,
+        bg: theme.bg,
+      });
+      continue;
+    }
+
     if (line.boxed) screen.set(2, y, '│', { fg: theme.border, bg: theme.bg });
 
     let x = line.boxed ? 2 + line.indent : line.indent;
@@ -368,6 +379,15 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
       }
       y += 1;
     }
+  }
+
+  // 下にも続きがあることを示す
+  const below = Math.max(0, lines.length - start - bodyHeight);
+  if (below > 0) {
+    textRight(screen, 0, bodyTop + bodyHeight - 1, screen.width - 2, `↓ さらに ${below} 行  [PgDn]`, {
+      fg: theme.textDim,
+      bg: theme.bg,
+    });
   }
 
   // 動いている印
@@ -445,7 +465,7 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
     screen.width - 2,
     s.completion
       ? '[Tab/↑↓]候補を選ぶ  [Enter]決定  [Esc]やめる'
-      : '[Enter]送信 [Ctrl+J]改行 [Alt+e]下書き [Tab]サブ [Ctrl+C]中断 [Esc]戻る',
+      : '[Enter]送信 [Ctrl+J]改行 [PgUp/PgDn]過去の会話 [Alt+e]控え [Alt+p]控えを送る [Esc]戻る',
     { fg: theme.textDim, bg: theme.bg },
   );
 }

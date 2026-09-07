@@ -62,7 +62,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     usage: boot.usage,
     bell: opts.bell && boot.config.notifications.bell,
     defaultCwd: boot.config.defaults.cwd,
-    loadHistory: (id) => boot.persistence.loadTasks(id, 20),
+    // 過去の会話を遡れるようにする。1 件あたり指示 + 要約の 2 項目なので、
+    // 多めに積んでも ConversationState の上限（2000 件）には遠い。
+    loadHistory: (id) => boot.persistence.loadTasks(id, 300),
     warnings: boot.warnings,
     history: boot.history,
   });

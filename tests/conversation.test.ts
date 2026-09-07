@@ -441,3 +441,103 @@ describe('動いていることが分かる', () => {
     assert.ok(rows.some((r) => r.includes('Ctrl+C で中断')));
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('過去の会話を遡る', () => {
+  function longConversation(turns: number) {
+    const conv = new ConversationState();
+    for (let i = 0; i < turns; i += 1) {
+      conv.pushUser(`指示 ${i}`);
+      conv.applyEvent({ t: 'text', delta: `返事 ${i}` });
+      conv.applyEvent({ t: 'turn_end', ok: true, result: '' });
+    }
+    return conv;
+  }
+
+  function draw(conv: ConversationState): string[] {
+    const screen = new Screen(80, 20, 'none');
+    drawConversation(screen, {
+      session: { name: 'claude-1', kind: 'claude', state: 'idle', drafts: [], pendingApprovals: [] } as never,
+      conversation: conv,
+      theme: DEFAULT_THEME,
+      now: 0,
+    });
+    return screen.toStrings();
+  }
+
+  test('上に続きがあることを知らせる', () => {
+    // 何も出さないと「これで全部」に見えて、遡れることに気づけない
+    const rows = draw(longConversation(40));
+    assert.ok(
+      rows.some((r) => /↑ さらに \d+ 行/.test(r)),
+      '残りの行数と押すキーが出る',
+    );
+  });
+
+  test('短い会話では出さない', () => {
+    const rows = draw(longConversation(1));
+    assert.equal(rows.some((r) => r.includes('↑ さらに')), false);
+  });
+
+  test('遡ると下にも続きがあると出る', () => {
+    const conv = longConversation(40);
+    conv.scrollBy(-30);
+    const rows = draw(conv);
+    assert.ok(rows.some((r) => /↓ さらに \d+ 行/.test(r)));
+  });
+
+  test('最下部に戻ると下の案内は消える', () => {
+    const conv = longConversation(40);
+    conv.scrollBy(-30);
+    conv.scrollToBottom();
+    const rows = draw(conv);
+    assert.equal(rows.some((r) => r.includes('↓ さらに')), false);
+  });
+
+  test('キーバーに遡り方が出ている', () => {
+    const rows = draw(longConversation(2));
+    assert.ok(rows.some((r) => r.includes('[PgUp/PgDn]過去の会話')));
+  });
+
+  test('前回までのやり取りが会話に入る', () => {
+    // 起動し直しても、前に何を頼んで何が返ってきたかを読める
+    const store = new StateStore(createDashboard({ slotCount: 6 }));
+    const claude = new MockDriver({ kind: 'claude' });
+    const manager = new SessionManager({
+      store,
+      drivers: { claude },
+      ids: new SeqIdGen(),
+      config: { defaultCwd: '/ws' },
+    });
+    const session = manager.createSession({ kind: 'claude', name: 'claude-1' });
+
+    const term = new FakeTerminal(100, 32);
+    const app = new App({
+      manager,
+      terminal: term,
+      animate: false,
+      loadHistory: () => [
+        {
+          id: 'task-1',
+          sessionId: session.id,
+          prompt: '前回の指示',
+          startedAt: 0,
+          endedAt: 1,
+          status: 'done',
+          events: [],
+          summary: '前回の返事です。',
+          recoveredFrom: null,
+        },
+      ],
+    });
+    app.start();
+
+    for (const k of decodeKeys('\r')) app.handleKey(k);
+    app.render();
+    const view = app.screen.toStrings().join('\n');
+
+    assert.ok(view.includes('前回の指示'), '何を頼んだか');
+    assert.ok(view.includes('前回の返事です。'), '何が返ってきたか');
+  });
+});

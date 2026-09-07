@@ -203,6 +203,7 @@ export class SessionManager {
         networkFingerprintAtStart: null,
       },
       drafts: [],
+      unseenResult: null,
       thinkingTokens: 0,
       context: {
         usedTokens: 0,
@@ -466,8 +467,18 @@ export class SessionManager {
     return this.#runTurn(sessionId, prompt, opts);
   }
 
+  /** 結果を見たことにする。会話を開いたときに呼ぶ。 */
+  markResultSeen(sessionId: string): void {
+    const session = this.store.find(sessionId);
+    if (!session || session.unseenResult === null) return;
+    session.unseenResult = null;
+    this.store.emit({ t: 'session_changed', sessionId });
+  }
+
   async #runTurn(sessionId: string, prompt: string, opts: DispatchOpts): Promise<Task> {
     const session = this.store.require(sessionId);
+    // 新しく頼んだ時点で、前の結果は見たものとして扱う
+    session.unseenResult = null;
     if (session.archived) throw new Error(`${session.name} はアーカイブしています`);
     if (!opts.force && BUSY_STATES.has(session.state)) {
       throw new Error(`${session.name} は実行中です`);
@@ -783,6 +794,7 @@ export class SessionManager {
       task.summary = o.errorMessage ?? o.result;
       session.lastError = o.errorMessage ?? o.result;
       session.stats.tasksFailed += 1;
+      session.unseenResult = 'failed';
       this.#setState(session, 'error');
       this.store.emit({ t: 'notify', reason: 'task_failed', sessionId: session.id });
     } else if (session.pendingApprovals.length > 0) {
@@ -794,6 +806,7 @@ export class SessionManager {
       task.status = 'done';
       task.summary = o.result;
       session.stats.tasksCompleted += 1;
+      session.unseenResult = 'done';
 
       const exhausted = session.context.ratio >= this.#config.contextRestThreshold;
       this.#setState(session, exhausted ? 'resting' : 'idle');

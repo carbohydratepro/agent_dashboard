@@ -190,8 +190,18 @@ function drawRow(
     x += w + GAP;
   };
 
-  // 実行中を示す印
-  cell(0, activityMark(session.state, s.animate ? s.frame : 0, s.ascii), theme.state[session.state]);
+  // 実行中を示す印。動いていないときに未読の結果があれば、そちらを優先する。
+  if (!BUSY_STATES.has(session.state) && session.unseenResult !== null) {
+    const done = session.unseenResult === 'done';
+    cell(
+      0,
+      done ? (s.ascii ? '*' : '✓') : (s.ascii ? '!' : '×'),
+      done ? theme.gauge.good : theme.gauge.critical,
+      true,
+    );
+  } else {
+    cell(0, activityMark(session.state, s.animate ? s.frame : 0, s.ascii), theme.state[session.state]);
+  }
   cell(1, session.name, selected ? theme.textBright : sessionColor(theme, session.color), selected);
   cell(2, STATE_LABEL[session.state], theme.state[session.state]);
 
