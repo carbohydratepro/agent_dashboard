@@ -18,6 +18,8 @@ import { renderMarkdown } from '../markdown.ts';
 import type { CompletionState } from '../completion.ts';
 import type { Span } from '../markdown.ts';
 import { STATE_LABEL_JA } from '../theme.ts';
+import { activityMark, isBusy } from '../animation.ts';
+import { formatDuration } from './format.ts';
 import { cursorPosition, dropWidth, scrollOffsetFor, truncate } from '../width.ts';
 
 export type ConvEntry =
@@ -165,6 +167,10 @@ export interface ConversationViewState {
   completion?: CompletionState | null;
   /** 候補が出せない理由。候補の代わりに 1 行だけ出す。 */
   completionNote?: string | null;
+  /** 動いている印を回すための番号 */
+  frame?: number;
+  animate?: boolean;
+  ascii?: boolean;
   /** 知らせ。一覧画面と同じものを、ここでも出す。 */
   banner?: { text: string; color: number } | null;
 }
@@ -254,6 +260,16 @@ export function layoutEntries(
   return out;
 }
 
+/** そのタスクで最後に始まった作業。まだ何もしていなければ空。 */
+export function lastActivity(task: Task): string {
+  for (let i = task.events.length - 1; i >= 0; i -= 1) {
+    const ev = task.events[i]!;
+    if (ev.t === 'tool_start') return ev.detail ? `${ev.name}  ${ev.detail}` : ev.name;
+    if (ev.t === 'subagent_start') return `Agent (${ev.agentType})  ${ev.description}`;
+  }
+  return '';
+}
+
 export function drawConversation(screen: Screen, s: ConversationViewState): void {
   const { theme, session: session, conversation: conv } = s;
   fillRect(screen, 0, 0, screen.width, screen.height, theme.bg);
@@ -262,8 +278,15 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
   const inputLineCount = conv.input.value.split('\n').length;
   const inputHeight = Math.min(7, Math.max(3, inputLineCount + 2));
   const memoRow = session.nextPrompt.trim() !== '' ? 1 : 0;
+
+  // 動いている間は 1 行使って、止まっているのか考えているのかを示す。
+  // 送ってから最初の出力が届くまで何十秒も無音になることがあり、
+  // 会話欄だけ見ていると固まったのか分からない。
+  const busy = isBusy(session.state);
+  const statusRow = busy ? 1 : 0;
+
   const bodyTop = 1;
-  const bodyHeight = screen.height - 1 - inputHeight - memoRow - 2;
+  const bodyHeight = screen.height - 1 - inputHeight - memoRow - statusRow - 2;
 
   // ヘッダー。知らせがあれば、そちらを優先して出す。
   if (s.banner) {
@@ -310,7 +333,7 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
   const completionRows =
     (completion ? Math.min(COMPLETION_ROWS, completion.candidates.length) : 0) + (note ? 1 : 0);
 
-  let y = screen.height - 1 - inputHeight - memoRow - completionRows - 1;
+  let y = screen.height - 1 - inputHeight - memoRow - completionRows - statusRow - 1;
   hline(screen, 0, y, screen.width, { fg: theme.border, bg: theme.bg });
   y += 1;
 
@@ -345,6 +368,29 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
       }
       y += 1;
     }
+  }
+
+  // 動いている印
+  if (busy) {
+    const mark = activityMark(session.state, s.animate === false ? 0 : (s.frame ?? 0), s.ascii);
+    const label = STATE_LABEL_JA[session.state];
+    const task = session.currentTask;
+    const elapsed = task ? `  ${formatDuration(s.now - task.startedAt)}` : '';
+
+    let x = 1;
+    x += screen.text(x, y, `${mark} `, { fg: theme.state[session.state], bg: theme.bg, bold: true });
+    x += screen.text(x, y, label + elapsed, { fg: theme.state[session.state], bg: theme.bg });
+
+    // いま何をしているか。無ければ空けておく（嘘を書かない）
+    const doing = task ? lastActivity(task) : '';
+    if (doing !== '') {
+      screen.text(x + 2, y, truncate(doing, Math.max(0, screen.width - x - 14)), {
+        fg: theme.textDim,
+        bg: theme.bg,
+      });
+    }
+    textRight(screen, 0, y, screen.width - 1, 'Ctrl+C で中断', { fg: theme.textDim, bg: theme.bg });
+    y += 1;
   }
 
   // メモの提示

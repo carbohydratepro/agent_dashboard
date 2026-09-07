@@ -325,3 +325,119 @@ describe('自分の指示と回答を色で分ける', () => {
     assert.equal(screen.get(rows[y]!.indexOf('これ'), y).fg, DEFAULT_THEME.userText);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('動いていることが分かる', () => {
+  /** 実行中の会話画面を 1 枚描く */
+  function drawBusy(
+    over: { state?: string; events?: unknown[]; now?: number; frame?: number } = {},
+  ): string[] {
+    const screen = new Screen(90, 20, 'none');
+    drawConversation(screen, {
+      session: {
+        name: 'claude-1',
+        kind: 'claude',
+        state: over.state ?? 'thinking',
+        nextPrompt: '',
+        pendingApprovals: [],
+        currentTask: { id: 't1', startedAt: 0, events: over.events ?? [] },
+      } as never,
+      conversation: new ConversationState(),
+      theme: DEFAULT_THEME,
+      now: over.now ?? 5_000,
+      frame: over.frame ?? 0,
+      animate: true,
+    });
+    return screen.toStrings();
+  }
+
+  /** 動いている印の行。ヘッダの状態表示ともキーバーとも区別する。 */
+  const statusRow = (rows: string[]): string =>
+    rows.find((r) => r.includes('Ctrl+C で中断')) ?? '';
+
+  test('送った直後から動いている印が出る', async () => {
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude', name: 'claude-1' });
+    h.press('\r');
+    h.press('テストして', '\r');
+    h.manager.forceState(session.id, 'thinking');
+
+    const view = h.view();
+    assert.ok(view.includes('テストして'), '打った指示がすぐ見える');
+    assert.ok(view.includes('思考中'), '状態が出ている');
+
+    await settle();
+  });
+
+  test('止まっている間は印を出さない', async () => {
+    const h = harness();
+    h.manager.createSession({ kind: 'claude', name: 'claude-1' });
+    h.press('\r');
+    h.press('テストして', '\r');
+    await settle();
+
+    // 応答が終われば消える。残ると、動いていないのに動いて見える。
+    assert.equal(statusRow(h.view().split('\n')), '');
+  });
+
+  test('止め方が分かる', () => {
+    assert.match(statusRow(drawBusy()), /Ctrl\+C で中断/);
+  });
+
+  test('実行中のツールが出る', () => {
+    const rows = drawBusy({
+      state: 'working',
+      events: [
+        { t: 'tool_start', name: 'Read', detail: 'a.ts', toolUseId: '1' },
+        { t: 'tool_start', name: 'Bash', detail: 'npm test', toolUseId: '2' },
+      ],
+    });
+    assert.match(statusRow(rows), /npm test/, '最後に始めたものが分かる');
+  });
+
+  test('まだ何もしていなければ何も書かない', () => {
+    // 嘘を書くくらいなら空けておく
+    const row = statusRow(drawBusy({ events: [] }));
+    assert.match(row, /思考中/);
+    assert.equal(/Bash|Read/.test(row), false);
+  });
+
+  test('印が回る', () => {
+    const marks = new Set<string>();
+    for (const frame of [0, 1, 2, 3]) {
+      marks.add(statusRow(drawBusy({ frame })).trimStart().slice(0, 1));
+    }
+    assert.ok(marks.size > 1, `印が変化する: ${[...marks].join('')}`);
+  });
+
+  test('経過時間が出る', () => {
+    assert.match(statusRow(drawBusy({ now: 95_000 })), /01:35/, '待ち時間が分かる');
+  });
+
+  test('本文の行を潰さない', () => {
+    // 印のぶん 1 行使うので、確保する高さを間違えると会話が隠れる
+    const conv = new ConversationState();
+    conv.pushUser('この行は消えてはいけない');
+
+    const screen = new Screen(90, 20, 'none');
+    drawConversation(screen, {
+      session: {
+        name: 'claude-1',
+        kind: 'claude',
+        state: 'thinking',
+        nextPrompt: '',
+        pendingApprovals: [],
+        currentTask: { id: 't1', startedAt: 0, events: [] },
+      } as never,
+      conversation: conv,
+      theme: DEFAULT_THEME,
+      now: 5_000,
+      frame: 0,
+      animate: true,
+    });
+    const rows = screen.toStrings();
+    assert.ok(rows.some((r) => r.includes('この行は消えてはいけない')));
+    assert.ok(rows.some((r) => r.includes('Ctrl+C で中断')));
+  });
+});

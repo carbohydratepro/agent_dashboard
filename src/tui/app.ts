@@ -254,8 +254,13 @@ export class App {
       this.banner = null;
       this.#dirty = true;
     }
-    if (this.#animate && this.screenId === 'main') {
-      const moving = this.store.active().some((e) => isBusy(e.state));
+    if (this.#animate) {
+      // 会話画面でも回す。ここで止めると、送ったあと最初の出力が来るまで
+      // 画面が一切変わらず、固まったのか考えているのか分からない。
+      const moving =
+        this.screenId === 'main'
+          ? this.store.active().some((e) => isBusy(e.state))
+          : this.screenId === 'conversation' && isBusy(this.selectedSession?.state ?? 'idle');
       if (moving) {
         this.frame += 1;
         this.#dirty = true;
@@ -316,6 +321,9 @@ export class App {
           completion: this.#completion,
           completionNote: this.#completionNote,
           banner: this.banner,
+          frame: this.frame,
+          animate: this.#animate,
+          ascii: this.#ascii,
         });
         return;
       }
