@@ -178,6 +178,18 @@ export interface ConversationViewState {
 /** 候補一覧に使う高さ */
 export const COMPLETION_ROWS = 6;
 
+/**
+ * 一度に動かす行数。
+ *
+ * 半画面ずつ動かすと、残る行が少なすぎて「ページが切り替わった」ように見え、
+ * どこを読んでいたか見失う。1/4 ほどにして、大半の行を残したまま送る。
+ */
+export function scrollStep(screenHeight: number): number {
+  // 枠・入力欄・キーバーを引いた、本文がおよそ使える高さ
+  const body = Math.max(1, screenHeight - 6);
+  return Math.max(2, Math.floor(body / 4));
+}
+
 export interface RenderedLine {
   /** 装飾ごとに分かれた断片。text だけ見れば素の文字列になる。 */
   spans: Span[];
@@ -318,7 +330,7 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
     // 先頭行は、上にまだ続きがあるかどうかの表示に使う。
     // 何も出さないと「これで全部」に見えて、遡れることに気づけない。
     if (i === 0 && start > 0) {
-      textClipped(screen, 1, y, screen.width - 2, `↑ さらに ${start} 行  [PgUp]`, {
+      textClipped(screen, 1, y, screen.width - 2, `↑ さらに ${start} 行  [Ctrl+U]`, {
         fg: theme.textDim,
         bg: theme.bg,
       });
@@ -384,7 +396,7 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
   // 下にも続きがあることを示す
   const below = Math.max(0, lines.length - start - bodyHeight);
   if (below > 0) {
-    textRight(screen, 0, bodyTop + bodyHeight - 1, screen.width - 2, `↓ さらに ${below} 行  [PgDn]`, {
+    textRight(screen, 0, bodyTop + bodyHeight - 1, screen.width - 2, `↓ さらに ${below} 行  [Ctrl+D]`, {
       fg: theme.textDim,
       bg: theme.bg,
     });
@@ -465,7 +477,7 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
     screen.width - 2,
     s.completion
       ? '[Tab/↑↓]候補を選ぶ  [Enter]決定  [Esc]やめる'
-      : '[Enter]送信 [Ctrl+J]改行 [PgUp/PgDn]過去の会話 [Alt+e]控え [Alt+p]控えを送る [Esc]戻る',
+      : '[Enter]送信 [Ctrl+J]改行 [Ctrl+U/D]過去の会話 [Alt+e]控え [Alt+p]控えを送る [Esc]戻る',
     { fg: theme.textDim, bg: theme.bg },
   );
 }

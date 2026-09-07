@@ -13,6 +13,7 @@ import { SeqIdGen } from '../src/core/clock.ts';
 import {
   ConversationState,
   drawConversation,
+  scrollStep,
   layoutEntries,
   lineText,
   MAX_ENTRIES,
@@ -470,7 +471,7 @@ describe('過去の会話を遡る', () => {
     // 何も出さないと「これで全部」に見えて、遡れることに気づけない
     const rows = draw(longConversation(40));
     assert.ok(
-      rows.some((r) => /↑ さらに \d+ 行/.test(r)),
+      rows.some((r) => /↑ さらに \d+ 行  \[Ctrl\+U\]/.test(r)),
       '残りの行数と押すキーが出る',
     );
   });
@@ -497,7 +498,7 @@ describe('過去の会話を遡る', () => {
 
   test('キーバーに遡り方が出ている', () => {
     const rows = draw(longConversation(2));
-    assert.ok(rows.some((r) => r.includes('[PgUp/PgDn]過去の会話')));
+    assert.ok(rows.some((r) => r.includes('[Ctrl+U/D]過去の会話')));
   });
 
   test('前回までのやり取りが会話に入る', () => {
@@ -539,5 +540,75 @@ describe('過去の会話を遡る', () => {
 
     assert.ok(view.includes('前回の指示'), '何を頼んだか');
     assert.ok(view.includes('前回の返事です。'), '何が返ってきたか');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('遡りかた', () => {
+  test('一度に動くのは 1/4 ほど', () => {
+    // 半画面ずつだと残る行が少なく、ページが切り替わったように見える
+    for (const height of [24, 30, 50]) {
+      const body = height - 6;
+      const step = scrollStep(height);
+      assert.ok(step >= 2, `${height}: ${step}`);
+      assert.ok(step <= body / 3, `${height}: 本文 ${body} 行に対して ${step} 行は動きすぎ`);
+      assert.ok(step >= body / 6, `${height}: ${step} 行では進まなすぎ`);
+    }
+  });
+
+  test('画面が小さくても止まらない', () => {
+    assert.ok(scrollStep(8) >= 2);
+    assert.ok(scrollStep(1) >= 2);
+  });
+
+  test('Ctrl+U / Ctrl+D で動き、PgUp / PgDn では動かない', async () => {
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude', name: 'claude-1' });
+    for (let i = 0; i < 40; i += 1) {
+      await h.manager.dispatch(session.id, `指示 ${i}`);
+    }
+    h.press('\r');
+
+    /** 画面に出ている「↑ さらに N 行」の N。出ていなければ 0。 */
+    const above = (): number => {
+      const row = h.view().split('\n').find((r) => r.includes('↑ さらに')) ?? '';
+      return Number(row.match(/↑ さらに (\d+) 行/)?.[1] ?? 0);
+    };
+
+    const atBottom = above();
+
+    h.press('\x1b[5~');
+    assert.equal(above(), atBottom, 'PgUp では動かない');
+
+    h.press('\x15');
+    const afterCtrlU = above();
+    assert.ok(afterCtrlU < atBottom, 'Ctrl+U で遡る');
+
+    h.press('\x1b[6~');
+    assert.equal(above(), afterCtrlU, 'PgDn でも動かない');
+
+    h.press('\x04');
+    assert.ok(above() > afterCtrlU, 'Ctrl+D で戻る');
+  });
+
+  test('一度に消える行は画面の一部だけ', async () => {
+    // 大半の行が残るので、どこを読んでいたか見失わない
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude', name: 'claude-1' });
+    for (let i = 0; i < 40; i += 1) {
+      await h.manager.dispatch(session.id, `指示 ${i}`);
+    }
+    h.press('\r');
+
+    const bodyOf = (): string[] =>
+      h.view().split('\n').slice(1, 25).filter((r) => r.trim() !== '');
+
+    const before = new Set(bodyOf());
+    h.press('\x15');
+    const after = bodyOf();
+
+    const kept = after.filter((r) => before.has(r)).length;
+    assert.ok(kept >= after.length / 2, `${kept}/${after.length} 行しか残っていない`);
   });
 });

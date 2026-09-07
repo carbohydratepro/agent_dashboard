@@ -45,7 +45,7 @@ import type { UsageMonitor } from '../core/usage-monitor.ts';
 import type { NetworkMonitor } from '../core/network.ts';
 import { canSendDraft } from './views/detail.ts';
 import { formatDuration, formatTokens } from './views/format.ts';
-import { drawConversation, ConversationState } from './views/conversation.ts';
+import { drawConversation, ConversationState, scrollStep } from './views/conversation.ts';
 import { applyCompletion, commandPrefix, completionFor, moveSelection } from './completion.ts';
 import type { CompletionState } from './completion.ts';
 import { drawApproval } from './views/approval.ts';
@@ -1802,12 +1802,14 @@ export class App {
       conv.showSubordinates = !conv.showSubordinates;
       return;
     }
-    if (k.name === 'pageup' || (k.ctrl && k.ch === 'u')) {
-      conv.scrollBy(-Math.floor(this.screen.height / 2));
+    // 会話は Ctrl+U / Ctrl+D だけ。PgUp / PgDn は端末側で拾われることがあり、
+    // 効いたり効かなかったりするので受けない。
+    if (k.ctrl && k.ch === 'u') {
+      conv.scrollBy(-scrollStep(this.screen.height));
       return;
     }
-    if (k.name === 'pagedown' || (k.ctrl && k.ch === 'd')) {
-      conv.scrollBy(Math.floor(this.screen.height / 2));
+    if (k.ctrl && k.ch === 'd') {
+      conv.scrollBy(scrollStep(this.screen.height));
       return;
     }
     if (k.name === 'up' && conv.input.isEmpty) {
