@@ -14,6 +14,9 @@ import {
   moveSelection,
 } from '../src/tui/completion.ts';
 import { parseProbeOutput } from '../src/core/usage.ts';
+import { ConversationState, drawConversation } from '../src/tui/views/conversation.ts';
+import { Screen } from '../src/tui/screen.ts';
+import { DEFAULT_THEME } from '../src/tui/theme.ts';
 import { App } from '../src/tui/app.ts';
 import { FakeTerminal } from '../src/tui/terminal.ts';
 import { SessionManager } from '../src/core/session-manager.ts';
@@ -265,5 +268,50 @@ describe('画面での動き', () => {
     await settle();
     assert.equal(h.codex.calls.length, 0, '黙って送らない');
     assert.ok(h.view().includes('解釈しません'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('codex では候補を出さない理由を書く', () => {
+  function conversationScreen(kind: 'claude' | 'codex', input: string): string[] {
+    const conv = new ConversationState();
+    conv.input.value = input;
+    conv.input.cursor = input.length;
+
+    const screen = new Screen(90, 20, 'none');
+    drawConversation(screen, {
+      session: { name: `${kind}-1`, kind, state: 'idle', nextPrompt: '', pendingApprovals: [] } as never,
+      conversation: conv,
+      theme: DEFAULT_THEME,
+      now: 0,
+      completion: null,
+      completionNote:
+        kind === 'codex' && input.startsWith('/')
+          ? 'codex は指示文としてそのまま送ります（codex exec はスラッシュコマンドを解釈しません）'
+          : null,
+    });
+    return screen.toStrings();
+  }
+
+  test('スラッシュを打つと理由が出る', () => {
+    const rows = conversationScreen('codex', '/st');
+    assert.ok(
+      rows.some((r) => r.includes('そのまま送ります')),
+      '候補が空でも、なぜ空なのかが分かる',
+    );
+  });
+
+  test('普通の入力では出さない', () => {
+    const rows = conversationScreen('codex', 'テストして');
+    assert.equal(
+      rows.some((r) => r.includes('そのまま送ります')),
+      false,
+    );
+  });
+
+  test('入力欄は理由に潰されない', () => {
+    const rows = conversationScreen('codex', '/st');
+    assert.ok(rows.some((r) => r.includes('/st')), '打った文字が見えている');
   });
 });

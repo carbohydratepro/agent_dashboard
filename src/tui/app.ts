@@ -42,7 +42,7 @@ import type { NetworkMonitor } from '../core/network.ts';
 import { canSendDraft } from './views/detail.ts';
 import { formatDuration, formatTokens } from './views/format.ts';
 import { drawConversation, ConversationState } from './views/conversation.ts';
-import { applyCompletion, completionFor, moveSelection } from './completion.ts';
+import { applyCompletion, commandPrefix, completionFor, moveSelection } from './completion.ts';
 import type { CompletionState } from './completion.ts';
 import { drawApproval } from './views/approval.ts';
 
@@ -158,6 +158,7 @@ export class App {
   #importSession: ImportState | null = null;
   #approvalIndex = 0;
   #conversations = new Map<string, ConversationState>();
+  #completionNote: string | null = null;
   #resourceMonitor = new ResourceMonitor();
   #resources: ResourceSample | null = null;
   #resourcesAt = 0;
@@ -309,6 +310,7 @@ export class App {
           theme,
           now: this.#now(),
           completion: this.#completion,
+          completionNote: this.#completionNote,
           banner: this.banner,
         });
         return;
@@ -435,9 +437,15 @@ export class App {
    * 一覧は claude の system/init が返した実物だけを使い、無ければ何も出さない。
    */
   #refreshCompletion(session: Session, conv: ConversationState): void {
-    // codex は exec モードでスラッシュコマンドを解釈せず、ただのプロンプトになる
+    this.#completionNote = null;
+
+    // codex は exec モードでスラッシュコマンドを解釈せず、ただのプロンプトになる。
+    // 黙って候補を出さないと「壊れている」と見えるので、理由を書く。
     if (session.kind !== 'claude') {
       this.#completion = null;
+      if (commandPrefix(conv.input.value, conv.input.cursor) !== null) {
+        this.#completionNote = `codex は指示文としてそのまま送ります（${session.kind} exec はスラッシュコマンドを解釈しません）`;
+      }
       return;
     }
     const snapshot = this.#usage?.snapshot('claude');

@@ -163,6 +163,8 @@ export interface ConversationViewState {
   now: number;
   /** スラッシュコマンドの候補。無ければ出さない。 */
   completion?: CompletionState | null;
+  /** 候補が出せない理由。候補の代わりに 1 行だけ出す。 */
+  completionNote?: string | null;
   /** 知らせ。一覧画面と同じものを、ここでも出す。 */
   banner?: { text: string; color: number } | null;
 }
@@ -303,13 +305,22 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
 
   // スラッシュコマンドの候補（入力欄の真上）
   const completion = s.completion ?? null;
+  const note = completion ? null : (s.completionNote ?? null);
   const completionRows = completion
     ? Math.min(COMPLETION_ROWS, completion.candidates.length)
-    : 0;
+    : note
+      ? 1
+      : 0;
 
   let y = screen.height - 1 - inputHeight - memoRow - completionRows - 1;
   hline(screen, 0, y, screen.width, { fg: theme.border, bg: theme.bg });
   y += 1;
+
+  if (note) {
+    // 何も出ない理由が分からないと、壊れているのか使えないのか区別がつかない
+    textClipped(screen, 2, y, screen.width - 4, note, { fg: theme.gauge.warn, bg: theme.bg });
+    y += 1;
+  }
 
   if (completion) {
     // 選択中が見えるように窓をずらす

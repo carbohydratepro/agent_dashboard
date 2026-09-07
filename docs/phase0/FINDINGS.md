@@ -428,3 +428,18 @@ Error: thread/resume: thread/resume failed: thread <id> already has an active wr
 
 `session_meta` 行は `base_instructions` を丸ごと含むため 18KB 前後ある。
 先頭だけ読む実装では、読む量をこれより十分大きく取らないと本文に届かない（現在 128KB）。
+
+
+## 9. codex にスラッシュコマンドは無い（2026-09-07 再確認）
+
+`codex exec` はスラッシュコマンドを解釈しない。TUI 側の機能で、非対話モードには無い。
+
+実データでの確認: `/status` を送った会話（rollout 01a02ebd）では、codex は
+コマンドとして扱わず、ただのプロンプトとしてモデルに渡していた。
+モデルはリポジトリを調べに行き、英語で「Status: idle and ready…」と答えている。
+
+codex-cli 0.151.0 の `codex exec --help` にも該当するオプション・サブコマンドは無い。
+claude 側（`-p` + `/usage`）が動くのとは対照的（§7）。
+
+そのため会話画面では codex のとき候補を出さない。ただし黙って出さないと
+壊れているように見えるので、`/` を打った時点で理由を 1 行出す。
