@@ -17,6 +17,7 @@ export type KeyName =
   | 'enter' | 'newline' | 'escape' | 'tab' | 'backtab'
   | 'backspace' | 'delete'
   | 'home' | 'end' | 'pageup' | 'pagedown'
+  | 'wheelup' | 'wheeldown'
   | 'unknown';
 
 export interface Key {
@@ -216,7 +217,8 @@ function decodeEscape(chunk: string, start: number, out: Key[]): number {
   if (next === '[') {
     let i = start + 2;
     let params = '';
-    while (i < chunk.length && /[0-9;]/.test(chunk[i]!)) {
+    // '<' は SGR マウスの頭。ここで弾くと並びが途中で切れる。
+    while (i < chunk.length && /[0-9;<]/.test(chunk[i]!)) {
       params += chunk[i]!;
       i += 1;
     }
@@ -228,6 +230,16 @@ function decodeEscape(chunk: string, start: number, out: Key[]): number {
     const alt = (modifier & 2) !== 0;
     const ctrl = (modifier & 4) !== 0;
     const raw = chunk.slice(start, i + 1);
+
+    // SGR マウス: ESC [ < <ボタン> ; <桁> ; <行> M（押下）/ m（解放）
+    // ホイールはボタン 64（上）/ 65（下）。それ以外の押下は捨てる。
+    if (params.startsWith('<') && (final === 'M' || final === 'm')) {
+      const button = Number(params.slice(1).split(';')[0] ?? '');
+      if (final === 'M' && button === 64) out.push(key('wheelup', { raw }));
+      else if (final === 'M' && button === 65) out.push(key('wheeldown', { raw }));
+      // クリックやドラッグは使わない。捨てて入力欄に紛れ込ませない。
+      return i + 1 - start;
+    }
 
     // xterm の modifyOtherKeys: ESC [ 27 ; <mod> ; <code> ~
     if (final === '~' && params.startsWith('27;')) {

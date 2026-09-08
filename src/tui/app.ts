@@ -562,6 +562,29 @@ export class App {
     return conv;
   }
 
+  /** ホイール 1 目盛りぶん送る。dir は -1 が上、+1 が下。 */
+  #wheel(dir: number): void {
+    const lines = SCROLL_LINES * dir;
+
+    if (this.screenId === 'conversation') {
+      const session = this.selectedSession;
+      // scrollBy は「下へ送る量」を取る。上へ送るには負を渡す。
+      if (session) this.#conversationFor(session.id).scrollBy(lines);
+      return;
+    }
+
+    if (this.screenId === 'main') {
+      // 一覧に送る行は無い。選択を動かすほうが素直。
+      const seats = this.store.dashboard.slotCount;
+      this.selectedRow = Math.max(0, Math.min(seats - 1, this.selectedRow + dir));
+      return;
+    }
+
+    // 一覧パネル（ログ・ヘルプ・統計・履歴・設定）は共通のスクロール量を持つ
+    const max = Math.max(0, this.#currentPanelLineCount() - (this.terminal.rows - 4));
+    this.#scroll = Math.max(0, Math.min(max, this.#scroll + lines));
+  }
+
   #openScreen(id: ScreenId): void {
     this.screenId = id;
     this.#scroll = 0;
@@ -577,6 +600,14 @@ export class App {
   // -------------------------------------------------------------------------
 
   handleKey(k: Key): void {
+    // ホイールはどの画面でも「いま見えているものを送る」。
+    // 画面ごとに送り先が違うので、キーの振り分けより先にここで捌く。
+    if (k.name === 'wheelup' || k.name === 'wheeldown') {
+      this.#wheel(k.name === 'wheelup' ? -1 : 1);
+      this.render();
+      return;
+    }
+
     switch (this.screenId) {
       case 'main':
         this.#mainKey(k);

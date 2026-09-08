@@ -641,3 +641,75 @@ describe('遡りかた', () => {
     assert.ok(kept >= after.length - 4, `${kept}/${after.length} 行しか残っていない`);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('ホイールで送る', () => {
+  async function opened() {
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude', name: 'claude-1' });
+    for (let i = 0; i < 40; i += 1) await h.manager.dispatch(session.id, `指示 ${i}`);
+    h.press('\r');
+    const above = (): number => {
+      const row = h.view().split('\n').find((r) => r.includes('↑ さらに')) ?? '';
+      return Number(row.match(/↑ さらに (\d+) 行/)?.[1] ?? 0);
+    };
+    return { ...h, above, session };
+  }
+
+  test('会話を遡れる', async () => {
+    const h = await opened();
+    const start = h.above();
+
+    h.press('\x1b[<64;10;5M');
+    assert.equal(h.above(), start - SCROLL_LINES, 'Ctrl+U と同じ量');
+
+    h.press('\x1b[<65;10;5M');
+    assert.equal(h.above(), start);
+  });
+
+  test('一覧では選択が動く', () => {
+    const h = harness();
+    h.manager.createSession({ kind: 'claude' });
+    h.manager.createSession({ kind: 'claude' });
+    assert.equal(h.app.selectedRow, 0);
+
+    h.press('\x1b[<65;10;5M');
+    assert.equal(h.app.selectedRow, 1, '下へ');
+
+    h.press('\x1b[<64;10;5M');
+    assert.equal(h.app.selectedRow, 0, '上へ');
+  });
+
+  test('一覧の端を越えない', () => {
+    const h = harness();
+    h.manager.createSession({ kind: 'claude' });
+    for (let i = 0; i < 20; i += 1) h.press('\x1b[<64;10;5M');
+    assert.equal(h.app.selectedRow, 0);
+    for (let i = 0; i < 50; i += 1) h.press('\x1b[<65;10;5M');
+    assert.equal(h.app.selectedRow, h.app.store.dashboard.slotCount - 1);
+  });
+
+  test('ヘルプなどのパネルも送れる', () => {
+    const h = harness();
+    h.manager.createSession({ kind: 'claude' });
+    h.press('?');
+    assert.equal(h.app.screenId, 'help');
+
+    const first = () => h.view().split('\n').slice(2, 4).join(' ');
+    const before = first();
+    for (let i = 0; i < 4; i += 1) h.press('\x1b[<65;10;5M');
+    assert.notEqual(first(), before, '中身が送られる');
+  });
+
+  test('クリックは入力欄に入らない', async () => {
+    const h = await opened();
+    h.press('\x1b[<0;10;5M');
+    h.press('\x1b[<0;10;5m');
+
+    // 押した跡が文字として残っていないこと
+    const rows = h.view().split('\n');
+    const input = rows.find((r) => r.includes('│ >')) ?? '';
+    assert.equal(input.replace(/[│>\s]/g, ''), '');
+  });
+});

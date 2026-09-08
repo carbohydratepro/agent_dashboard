@@ -138,3 +138,38 @@ describe('改行のキー（端末に奪われても打てるように）', () =
     assert.equal(c.ctrl, true);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('マウスホイール', () => {
+  test('SGR の報告をホイールとして読む', () => {
+    assert.deepEqual(decodeKeys('\x1b[<64;10;5M').map((k) => k.name), ['wheelup']);
+    assert.deepEqual(decodeKeys('\x1b[<65;10;5M').map((k) => k.name), ['wheeldown']);
+  });
+
+  test('桁が 3 桁でも読める', () => {
+    // SGR 形式にしたのは、桁が 223 を超えても壊れないため
+    assert.deepEqual(decodeKeys('\x1b[<64;180;42M').map((k) => k.name), ['wheelup']);
+  });
+
+  test('クリックは捨てる', () => {
+    // 使わないものを文字として入力欄に流し込まない
+    assert.deepEqual(decodeKeys('\x1b[<0;10;5M'), []);
+    assert.deepEqual(decodeKeys('\x1b[<0;10;5m'), []);
+    assert.deepEqual(decodeKeys('\x1b[<2;10;5M'), []);
+  });
+
+  test('従来のキーは変わらない', () => {
+    // '<' を読むようにしたので、他の並びを壊していないか
+    assert.deepEqual(decodeKeys('\x1b[A').map((k) => k.name), ['up']);
+    assert.deepEqual(decodeKeys('\x1b[5~').map((k) => k.name), ['pageup']);
+    assert.deepEqual(decodeKeys('\x1b[27;6;117~').map((k) => k.ch), ['u']);
+    assert.deepEqual(decodeKeys('あ').map((k) => k.ch), ['あ']);
+  });
+
+  test('ホイールと文字が続けて届いても分かれる', () => {
+    const keys = decodeKeys('\x1b[<65;1;1Mあ');
+    assert.deepEqual(keys.map((k) => k.name), ['wheeldown', 'char']);
+    assert.equal(keys[1]!.ch, 'あ');
+  });
+});

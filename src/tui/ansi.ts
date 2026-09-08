@@ -24,6 +24,19 @@ export const CLEAR_SCREEN = `${ESC}2J`;
  */
 export const MODIFY_OTHER_KEYS_ON = `${ESC}>4;1m`;
 export const MODIFY_OTHER_KEYS_OFF = `${ESC}>4m`;
+
+/**
+ * マウスの報告（ボタン押下 + SGR 形式）。
+ *
+ * 1000 は押下と解放だけを報告する。移動まで報告する 1002/1003 は
+ * 動かすたびに大量に届くので使わない。1006（SGR）を併せると、
+ * 桁が 223 を超えても正しく届く。
+ *
+ * これを立てると、端末側の文字選択が効かなくなることがある。
+ * 多くの端末では Shift を押しながらで従来どおり選択できる。
+ */
+export const MOUSE_ON = `${ESC}?1000h${ESC}?1006h`;
+export const MOUSE_OFF = `${ESC}?1006l${ESC}?1000l`;
 export const RESET = `${ESC}0m`;
 
 export function moveTo(x: number, y: number): string {
