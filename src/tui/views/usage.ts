@@ -83,6 +83,12 @@ export function usagePieces(s: UsageViewState): UsagePiece[] {
         gauge: { ratio: w.usedPercent / 100, color },
       });
       pieces.push({ text: ` ${Math.round(w.usedPercent)}%`, color });
+
+      if (w.expired) {
+        // 記録は前の窓のもの。0% と出しているのは実測ではなく入れ替わりの結果。
+        pieces.push({ text: '(リセット済) ', color: theme.textDim });
+        continue;
+      }
       const reset = untilReset(w, s.now);
       if (reset !== '') pieces.push({ text: `(${reset}) `, color: theme.textDim });
       else pieces.push({ text: ' ', color: theme.textDim });

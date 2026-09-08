@@ -32,6 +32,14 @@ export interface UsageWindow {
   resetsAt: number | null;
   /** CLI が返した元の表記。読めなかったときはこちらを出す */
   resetsText: string;
+  /**
+   * 記録された時点では有効だったが、その後リセット時刻を過ぎた窓。
+   *
+   * codex の使用量は「最後に codex を動かしたときの記録」でしかない。
+   * 一晩動かさずにいると、窓が入れ替わったあとも古い数字を出し続け、
+   * 上限に張り付いているように見える。
+   */
+  expired?: boolean;
 }
 
 export interface UsageSnapshot {
@@ -283,7 +291,7 @@ export function labelForWindowMinutes(minutes: number): string {
   return `${minutes}分`;
 }
 
-function toWindow(raw: unknown, fallbackLabel: string): UsageWindow | null {
+function toWindow(raw: unknown, fallbackLabel: string, now: number): UsageWindow | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const w = raw as CodexRateLimitWindow;
   const percent = typeof w.used_percent === 'number' ? w.used_percent : null;
@@ -292,15 +300,27 @@ function toWindow(raw: unknown, fallbackLabel: string): UsageWindow | null {
   const minutes = typeof w.window_minutes === 'number' ? w.window_minutes : 0;
   const resetsAt = typeof w.resets_at === 'number' ? w.resets_at * 1000 : null;
 
+  // リセット時刻を過ぎていれば、その数字はもう前の窓のもの。
+  // そのまま出すと、上限に張り付いたまま動かないように見える。
+  const expired = resetsAt !== null && resetsAt <= now;
+
   return {
     label: minutes > 0 ? labelForWindowMinutes(minutes) : fallbackLabel,
-    usedPercent: Math.max(0, Math.min(100, percent)),
+    usedPercent: expired ? 0 : Math.max(0, Math.min(100, percent)),
     resetsAt,
     resetsText: resetsAt ? new Date(resetsAt).toLocaleString('ja-JP') : '',
+    expired,
   };
 }
 
 /** ロールアウト 1 ファイルから、最後の rate_limits を取り出す */
+/** その記録が指している窓のうち、いちばん先のリセット時刻 */
+function latestReset(snapshot: UsageSnapshot): number {
+  let out = 0;
+  for (const w of snapshot.windows) out = Math.max(out, w.resetsAt ?? 0);
+  return out;
+}
+
 export function parseCodexRollout(text: string, now: number): UsageSnapshot | null {
   const lines = text.split('\n');
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -321,8 +341,8 @@ export function parseCodexRollout(text: string, now: number): UsageSnapshot | nu
     const l = limits as Record<string, unknown>;
 
     const windows: UsageWindow[] = [];
-    const primary = toWindow(l.primary, '主');
-    const secondary = toWindow(l.secondary, '副');
+    const primary = toWindow(l.primary, '主', now);
+    const secondary = toWindow(l.secondary, '副', now);
     if (primary) windows.push(primary);
     if (secondary) windows.push(secondary);
     if (windows.length === 0) continue;
@@ -377,14 +397,20 @@ export class CodexUsageProbe implements UsageProbe {
       return empty('codex', now, 'codex のセッション記録が見つかりません');
     }
 
+    // ファイルの新しさではなく、記録された窓の新しさで選ぶ。
+    // 長く続いているスレッドのファイルが更新されても、そこに載っている
+    // 使用量が最新とは限らない。
+    let best: UsageSnapshot | null = null;
     for (const file of files) {
       try {
         const snapshot = parseCodexRollout(readTail(file, this.#tailBytes), now);
-        if (snapshot) return snapshot;
+        if (!snapshot) continue;
+        if (best === null || latestReset(snapshot) > latestReset(best)) best = snapshot;
       } catch {
         // 読めないファイルは飛ばして次を見る
       }
     }
+    if (best) return best;
     return empty('codex', now, 'まだ使用量の記録がありません（codex を 1 回動かすと出ます）');
   }
 

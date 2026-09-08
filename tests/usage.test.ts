@@ -6,7 +6,15 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -503,5 +511,107 @@ describe('ホーム画面', () => {
     await new Promise((r) => setTimeout(r, 30));
 
     assert.ok(calls >= 1, '使ったぶんを反映するために取り直す');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('古い記録を上限として出さない', () => {
+  /**
+   * codex の使用量は「最後に codex を動かしたときの記録」でしかない。
+   * 一晩動かさずにいると窓が入れ替わるが、記録は前の窓のまま残る。
+   */
+  function rollout(usedPercent: number, resetsAtSec: number): string {
+    return JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        rate_limits: {
+          primary: { used_percent: usedPercent, window_minutes: 300, resets_at: resetsAtSec },
+          secondary: { used_percent: 2, window_minutes: 10080, resets_at: resetsAtSec + 600_000 },
+        },
+      },
+    });
+  }
+
+  const now = Date.UTC(2026, 8, 8, 14, 0, 0);
+
+  test('リセット済みの窓は 0% として出す', () => {
+    // 昨夜 99% まで使ったが、その窓は朝には入れ替わっている
+    const past = Math.floor((now - 10 * 3_600_000) / 1000);
+    const snap = parseCodexRollout(rollout(99, past), now)!;
+
+    assert.equal(snap.windows[0]!.usedPercent, 0, '前の窓の数字は出さない');
+    assert.equal(snap.windows[0]!.expired, true);
+  });
+
+  test('まだ有効な窓はそのまま', () => {
+    const future = Math.floor((now + 3_600_000) / 1000);
+    const snap = parseCodexRollout(rollout(64, future), now)!;
+
+    assert.equal(snap.windows[0]!.usedPercent, 64);
+    assert.equal(snap.windows[0]!.expired, false);
+  });
+
+  test('リセット済みと分かるように書く', () => {
+    const past = Math.floor((now - 10 * 3_600_000) / 1000);
+    const snap = parseCodexRollout(rollout(99, past), now)!;
+
+    const text = usagePieces({
+      theme: DEFAULT_THEME,
+      now,
+      snapshots: { codex: snap },
+      availableKinds: ['codex'],
+    })
+      .map((p) => p.text)
+      .join('');
+
+    assert.match(text, /リセット済/);
+    assert.equal(text.includes('99%'), false);
+  });
+});
+
+describe('どの記録を使うか', () => {
+  let dir = '';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'vo-usagepick-'));
+  });
+
+  afterEach(() => {
+    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function write(name: string, usedPercent: number, resetsAtSec: number, mtimeSec: number): void {
+    const day = join(dir, '2026', '09', '08');
+    mkdirSync(day, { recursive: true });
+    const path = join(day, `rollout-${name}.jsonl`);
+    writeFileSync(
+      path,
+      `${JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          rate_limits: {
+            primary: { used_percent: usedPercent, window_minutes: 300, resets_at: resetsAtSec },
+          },
+        },
+      })}\n`,
+    );
+    utimesSync(path, mtimeSec, mtimeSec);
+  }
+
+  test('ファイルの新しさではなく窓の新しさで選ぶ', async () => {
+    // 長く続いているスレッドのファイルが最後に更新されても、
+    // そこに載っている使用量が最新とは限らない。
+    const now = Date.UTC(2026, 8, 8, 14, 0, 0);
+    const old = Math.floor((now - 3_600_000) / 1000);
+    const fresh = Math.floor((now + 3_600_000) / 1000);
+
+    write('a-old-window', 99, old, 2_000_000_000); // 更新は新しいが窓は古い
+    write('b-new-window', 12, fresh, 1_000_000_000);
+
+    const snap = await new CodexUsageProbe({ sessionsDir: dir, now: () => now }).fetch();
+    assert.equal(snap.windows[0]!.usedPercent, 12, '新しい窓のほうを採る');
   });
 });
