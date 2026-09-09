@@ -16,6 +16,8 @@ import { StateStore, createDashboard } from '../src/core/store.ts';
 import { MockDriver, successfulTurn } from '../src/core/drivers/mock.ts';
 import { SeqIdGen } from '../src/core/clock.ts';
 import { flagsFor } from '../src/tui/views/table.ts';
+import { buildHandover } from '../src/core/handover.ts';
+import type { Task } from '../src/core/types.ts';
 
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
@@ -259,5 +261,95 @@ describe('勝手には送らない', () => {
     h.press('\r');
     await settle();
     assert.equal(h.claude.calls[0]?.prompt, '控えの指示');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('引き継いで新しいセッションへ', () => {
+  function task(over: Partial<Task>): Task {
+    return {
+      id: 't', sessionId: 's', prompt: '', startedAt: 0, endedAt: 1, status: 'done',
+      events: [], summary: null, recoveredFrom: null, pid: null, outFile: null,
+      ...over,
+    } as Task;
+  }
+
+  test('指示と結果を並べる', () => {
+    const text = buildHandover([
+      task({ prompt: '認証を直して', summary: 'トークンの期限切れが原因でした。修正済みです。' }),
+      task({ prompt: 'テストも追加', summary: '3 件追加しました。' }),
+    ], { cwd: '/ws' });
+
+    assert.match(text, /認証を直して/);
+    assert.match(text, /トークンの期限切れ/);
+    assert.match(text, /テストも追加/);
+    assert.match(text, /作業ディレクトリ: \/ws/);
+  });
+
+  test('長くなりすぎないよう古いものから落とす', () => {
+    const tasks = Array.from({ length: 30 }, (_, i) =>
+      task({ prompt: `指示 ${i}`, summary: `結果 ${i}` }),
+    );
+    const text = buildHandover(tasks, { maxTurns: 5 });
+
+    assert.equal(text.includes('指示 29'), true, '直近は残す');
+    assert.equal(text.includes('指示 10'), false, '古いものは落とす');
+    assert.match(text, /これ以前に 25 件/, '落としたことは伝える');
+  });
+
+  test('長い要約は切り詰める', () => {
+    const text = buildHandover([task({ prompt: 'やって', summary: 'あ'.repeat(2000) })], {
+      maxSummaryChars: 50,
+    });
+    assert.ok(text.length < 500, `${text.length} 文字`);
+    assert.match(text, /…/);
+  });
+
+  test('複数行は 1 行に潰す', () => {
+    const text = buildHandover([task({ prompt: '一行目\n二行目', summary: 'あ\nい' })]);
+    assert.match(text, /一行目 二行目/);
+  });
+
+  test('中断したものはそう書く', () => {
+    const text = buildHandover([task({ prompt: '途中で止めた', summary: null, status: 'interrupted' })]);
+    assert.match(text, /中断しました/);
+  });
+
+  test('渡せるものが無ければ空', () => {
+    assert.equal(buildHandover([]), '');
+    assert.equal(buildHandover([task({ prompt: '   ' })]), '');
+  });
+
+  test('N で新しいセッションに移り、前のものは畳まれる', () => {
+    const h = harness();
+    const first = h.manager.createSession({ kind: 'claude', name: 'claude-1' });
+    first.currentTask = null;
+
+    // 履歴を持たせる
+    const app = new App({
+      manager: h.manager,
+      terminal: h.app.terminal,
+      animate: false,
+      loadHistory: () => [task({ prompt: '前の指示', summary: '前の結果' })],
+    });
+    app.start();
+    for (const k of decodeKeys('N')) app.handleKey(k);
+
+    assert.equal(first.archived, true, '前のセッションは畳む');
+    const next = h.store.active()[0]!;
+    assert.notEqual(next.id, first.id);
+    assert.equal(next.kind, first.kind);
+    assert.equal(app.screenId, 'conversation');
+  });
+
+  test('実行中は移らない', () => {
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude' });
+    h.manager.forceState(session.id, 'working');
+
+    h.press('N');
+    assert.equal(session.archived, false);
+    assert.ok(h.view().includes('実行中'));
   });
 });

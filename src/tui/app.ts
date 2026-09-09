@@ -16,6 +16,7 @@ import { CURSOR_HIDE, CURSOR_SHOW, moveTo } from './ansi.ts';
 import { recentTurns } from './views/detail.ts';
 import { LOCAL_COMMANDS, changeModelText, parseCommand, runLocalCommand } from '../core/local-commands.ts';
 import { modelChoicesFor, readCodexModelInfo } from '../core/models.ts';
+import { buildHandover } from '../core/handover.ts';
 import type { CodexModelInfo } from '../core/models.ts';
 import type { RecentTurn } from './views/detail.ts';
 import { ResourceMonitor } from '../core/resources.ts';
@@ -1324,6 +1325,9 @@ export class App {
         case 'p':
           this.#openDrafts();
           return;
+        case 'N':
+          this.#handOver();
+          return;
         case 'n':
           this.#openHire();
           return;
@@ -1504,6 +1508,57 @@ export class App {
     }
     this.#draftIndex = Math.min(this.#draftIndex, session.drafts.length - 1);
     this.#openScreen('drafts');
+  }
+
+  /**
+   * いまのセッションを畳んで、経緯を引き継いだ新しいセッションに移る。
+   *
+   * 同じスレッドを続けるほど 1 ターンで送り直す量が増える。移れば下地から
+   * 始め直せる。引き継ぎ文は手元のタスク履歴から作るのでモデルを呼ばない。
+   *
+   * 送信まではしない。入力欄に入れて渡すので、中身を見てから送れる。
+   */
+  #handOver(): void {
+    const session = this.selectedSession;
+    if (!session) return;
+    if (BUSY_STATES.has(session.state)) {
+      this.#notify(`${session.name} は実行中です`, this.theme.gauge.high);
+      return;
+    }
+
+    const text = buildHandover(this.#loadHistory?.(session.id) ?? [], {
+      cwd: session.workspace.requestedCwd,
+    });
+    if (text === '') {
+      this.#notify('引き継ぐやり取りがまだありません', this.theme.gauge.high);
+      return;
+    }
+
+    try {
+      const next = this.manager.createSession({
+        kind: session.kind,
+        cwd: session.workspace.requestedCwd,
+        role: session.role,
+        model: session.modelOverride ?? undefined,
+        permissionMode: session.permissionMode ?? undefined,
+      });
+      next.reasoningOverride = session.reasoningOverride;
+
+      // 先に新しいほうを作る。席が空いていなければ畳まずに済む。
+      this.manager.archiveSession(session.id);
+      this.#conversations.delete(session.id);
+
+      const conv = this.#conversationFor(next.id);
+      conv.pushSystem(`${session.name} から引き継ぎました`);
+      conv.input.setValue(text);
+      conv.input.cursor = text.length;
+
+      this.selectedRow = next.slot;
+      this.#openScreen('conversation');
+      this.#notify(`${next.name} に引き継ぎました。内容を確かめて送ってください。`);
+    } catch (err) {
+      this.#notify(err instanceof Error ? err.message : String(err), this.theme.gauge.critical);
+    }
   }
 
   #openHire(): void {

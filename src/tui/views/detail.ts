@@ -143,6 +143,19 @@ export function drawDetail(screen: Screen, rect: Rect, s: DetailViewState): void
   textClipped(screen, rect.x + 2, y, inner, wsText, { fg: theme.system, bg });
   y += 1;
 
+  // 文脈が伸びると 1 ターンの送り直しが高くつく。実測では 23 万トークンに達していた。
+  if (session.context.ratio >= 0.5 && y < rect.y + rect.h) {
+    textClipped(
+      screen,
+      rect.x + 2,
+      y,
+      inner,
+      `文脈が ${Math.round(session.context.ratio * 100)}% です。[N] で引き継いで新しいセッションに移れます。`,
+      { fg: theme.gauge.warn, bg },
+    );
+    y += 1;
+  }
+
   // 使っているモデルと推論の深さ。一覧では幅が足りず出せないことがある。
   const model = modelFor(session, s.codexDefaults);
   if (model !== '' && y < rect.y + rect.h) {
