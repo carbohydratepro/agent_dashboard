@@ -299,9 +299,31 @@ describe('メイン画面', () => {
   });
 
   test('画面が小さければ警告だけ出す', () => {
-    const text = render(80, 20).join('\n');
+    const text = render(30, 10).join('\n');
     assert.ok(text.includes('画面が小さすぎます'));
     assert.equal(text.includes('codex-1'), false);
+  });
+
+  test('スマホほどの幅でも収まる', () => {
+    // 40x20 は SSH クライアントの縦画面でだいたいこれくらい
+    for (const [w, h] of [[80, 24], [56, 30], [45, 24], [40, 20], [36, 14]] as const) {
+      const rows = render(w, h);
+      assert.equal(rows.join('\n').includes('画面が小さすぎます'), false, `${w}x${h}`);
+      assert.ok(rows.some((r) => r.includes('codex-1')), `${w}x${h}: 一覧が出る`);
+      for (const row of rows) {
+        assert.ok(displayWidth(row) <= w, `${w}x${h} はみ出し: ${row}`);
+      }
+    }
+  });
+
+  test('狭いと列を落とし、要るものは残す', () => {
+    // 何が・どうなっている・何をしている、は最後まで守る
+    const narrow = columnsFor(45).map((c) => c.key);
+    assert.deepEqual(narrow.includes('name'), true);
+    assert.deepEqual(narrow.includes('context'), true);
+    assert.deepEqual(narrow.includes('activity'), true);
+    assert.deepEqual(narrow.includes('tokens'), false, '数字ものから落とす');
+    assert.deepEqual(narrow.includes('model'), false);
   });
 
   test('広い端末でも崩れない', () => {

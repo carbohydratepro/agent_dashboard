@@ -42,13 +42,21 @@ export function drawHeader(screen: Screen, rect: Rect, s: HeaderState): void {
   const busy = active.filter((x) => BUSY_STATES.has(x.state)).length;
   const blocked = active.filter((x) => x.pendingApprovals.length > 0).length;
 
-  screen.text(rect.x + 1, rect.y, dashboard.title, { fg: theme.accent, bg: theme.bg, bold: true });
-
   const parts = [`${active.length}/${dashboard.slotCount} セッション`, `実行中 ${busy}`];
   if (blocked > 0) parts.push(`承認待ち ${blocked}`);
   parts.push(clockText(s.now));
 
+  // 狭いところでは要るものだけ残す。題名より状態のほうが要る。
+  while (parts.length > 1 && displayWidth(parts.join('   ')) > rect.w - 8) parts.shift();
+
   const right = parts.join('   ');
+  // 題名は右の塊とぶつからないところまで
+  textClipped(screen, rect.x + 1, rect.y, Math.max(0, rect.w - displayWidth(right) - 3), dashboard.title, {
+    fg: theme.accent,
+    bg: theme.bg,
+    bold: true,
+  });
+
   textRight(screen, rect.x, rect.y, rect.w - 1, right, {
     fg: theme.textDim,
     bg: theme.bg,

@@ -1,4 +1,9 @@
-/** 画面の領域計算。最小サイズ 100x30。 */
+/**
+ * 画面の領域計算。
+ *
+ * スマホから SSH で覗くと 40x20 ほどしかない。列を落として収まるようにしてあるので、
+ * 最小はそこまで下げる。これ未満は何を出しても読めないので断る。
+ */
 
 export interface Rect {
   x: number;
@@ -7,8 +12,8 @@ export interface Rect {
   h: number;
 }
 
-export const MIN_WIDTH = 100;
-export const MIN_HEIGHT = 30;
+export const MIN_WIDTH = 36;
+export const MIN_HEIGHT = 14;
 
 /** 一覧の見出し 1 行 + 罫線 1 行 */
 const TABLE_CHROME = 2;
@@ -28,7 +33,9 @@ export function computeLayout(width: number, height: number, rowCount: number): 
   const footer: Rect = { x: 0, y: height - 1, w: width, h: 1 };
 
   // 一覧は行数ぶん。残りを詳細に回す。
-  const tableHeight = Math.min(rowCount + TABLE_CHROME, Math.max(3, Math.floor((height - 4) * 0.6)));
+  // 画面が低いと詳細が潰れるので、一覧に回す割合を下げる。
+  const share = height < 24 ? 0.5 : 0.6;
+  const tableHeight = Math.min(rowCount + TABLE_CHROME, Math.max(3, Math.floor((height - 4) * share)));
   const table: Rect = { x: 0, y: usage.y + usage.h, w: width, h: tableHeight };
   const detail: Rect = {
     x: 0,

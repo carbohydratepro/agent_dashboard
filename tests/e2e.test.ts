@@ -203,12 +203,22 @@ describe('画面の頑丈さ', () => {
     }
   });
 
-  test('端末が小さいと警告だけ出す', async () => {
+  test('スマホほどの幅でも一覧が読める', async () => {
+    // SSH で覗くと 40 桁ほどしかない。列を落として収める。
     const h = await launch();
-    h.term.resize(70, 20);
+    h.term.resize(45, 24);
     h.app.render();
     const text = h.app.screen.toStrings().join('\n');
-    assert.ok(text.includes('画面が小さすぎます'));
+
+    assert.equal(text.includes('画面が小さすぎます'), false);
+    assert.ok(text.includes('空き'), '一覧は出ている');
+  });
+
+  test('これ以上小さいと警告だけ出す', async () => {
+    const h = await launch();
+    h.term.resize(30, 10);
+    h.app.render();
+    assert.ok(h.app.screen.toStrings().join('\n').includes('画面が小さすぎます'));
   });
 
   test('大きくすれば戻る', async () => {

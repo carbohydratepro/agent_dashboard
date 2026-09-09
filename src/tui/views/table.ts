@@ -40,14 +40,37 @@ const COLUMNS: Column[] = [
 /**
  * その幅で出す列。
  *
- * モデル名は長い（gpt-5.6-terra/high で 18 桁）。最小幅の 100 桁で出すと
- * 作業内容の列が潰れてしまうので、余裕があるときだけ出す。
+ * スマホから SSH で覗くと 40 桁ほどしかない。狭いところから順に、
+ * 無くても困らないものを落としていく。残す順は
+ * 「何が・どうなっている・何をしている」を最後まで守る。
  */
 export const MODEL_COLUMN_MIN_WIDTH = 124;
 
+/** 落としていく順（先に書いたものから落とす） */
+const DROP_ORDER = ['model', 'edits', 'cmds', 'uptime', 'tokens', 'tasks', 'flags', 'state'];
+
 export function columnsFor(width: number): Column[] {
-  if (width >= MODEL_COLUMN_MIN_WIDTH) return COLUMNS;
-  return COLUMNS.filter((c) => c.key !== 'model');
+  // 可変幅の列に最低これだけは残す
+  const need = 14;
+  let columns = COLUMNS;
+
+  for (const key of DROP_ORDER) {
+    const fixed = columns.reduce((sum, c) => sum + c.width + GAP, 0);
+    if (fixed + need <= width) break;
+    columns = columns.filter((c) => c.key !== key);
+  }
+
+  // コンテキストのゲージは狭いと場所を食うだけ。数字だけにする。
+  const fixed = columns.reduce((sum, c) => sum + c.width + GAP, 0);
+  if (fixed + need > width) {
+    columns = columns.map((c) => (c.key === 'context' ? { ...c, width: 5, header: 'ctx' } : c));
+  }
+  return columns;
+}
+
+/** ゲージを描くだけの幅があるか */
+export function hasContextGauge(columns: Column[]): boolean {
+  return (columns.find((c) => c.key === 'context')?.width ?? 0) >= 12;
 }
 
 export interface CodexDefaults {
@@ -250,19 +273,27 @@ function drawRow(
   cell('name', session.name, selected ? theme.textBright : sessionColor(theme, session.color), selected);
   cell('state', STATE_LABEL[session.state], theme.state[session.state]);
 
-  // コンテキストはゲージ + 数値
-  const ctxW = widths[indexOf('context')]!;
-  const pct = Math.round(session.context.ratio * 100);
-  const gaugeW = Math.max(4, ctxW - 7);
-  drawGauge(screen, x, y, gaugeW, session.context.ratio, {
-    filled: gaugeColor(theme, session.context.ratio),
-    emptyStyle: { fg: theme.border, bg },
-  });
-  screen.text(x + gaugeW + 1, y, `${padStart(String(pct), 3)}%${session.context.estimated ? '~' : ''}`, {
-    fg: theme.text,
-    bg,
-  });
-  x += ctxW + GAP;
+  // コンテキストはゲージ + 数値。狭いときは数値だけ。
+  const ctxIndex = indexOf('context');
+  if (ctxIndex >= 0) {
+    const ctxW = widths[ctxIndex]!;
+    const pct = Math.round(session.context.ratio * 100);
+    const mark = session.context.estimated ? '~' : '';
+    if (hasContextGauge(columns)) {
+      const gaugeW = Math.max(4, ctxW - 7);
+      drawGauge(screen, x, y, gaugeW, session.context.ratio, {
+        filled: gaugeColor(theme, session.context.ratio),
+        emptyStyle: { fg: theme.border, bg },
+      });
+      screen.text(x + gaugeW + 1, y, `${padStart(String(pct), 3)}%${mark}`, { fg: theme.text, bg });
+    } else {
+      screen.text(x, y, padStart(`${pct}%${mark}`, ctxW), {
+        fg: gaugeColor(theme, session.context.ratio),
+        bg,
+      });
+    }
+    x += ctxW + GAP;
+  }
 
   const elapsed = s.now - session.uptime.startedAt;
   cell('uptime', formatDuration(elapsed), theme.textDim);

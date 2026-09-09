@@ -7,6 +7,7 @@ import { BUSY_STATES } from '../../core/types.ts';
 import type { Theme } from '../theme.ts';
 import { gaugeColor, sessionColor, STATE_LABEL_JA } from '../theme.ts';
 import { drawGauge, fillRect, hline, textClipped, textRight, wrapText } from '../paint.ts';
+import { displayWidth } from '../width.ts';
 import { ROLE_LABEL } from '../../core/naming.ts';
 import { utilization } from '../../core/stats.ts';
 import { formatDuration, formatPercent, formatTokens } from './format.ts';
@@ -95,31 +96,33 @@ export function drawDetail(screen: Screen, rect: Rect, s: DetailViewState): void
   });
   y += 1;
 
-  // コンテキストと稼働
+  // コンテキストと稼働。狭いところではゲージから先に捨てる。
   const pct = Math.round(session.context.ratio * 100);
-  screen.text(rect.x + 2, y, 'コンテキスト ', { fg: theme.textDim, bg });
-  drawGauge(screen, rect.x + 15, y, 20, session.context.ratio, {
-    filled: gaugeColor(theme, session.context.ratio),
-    emptyStyle: { fg: theme.border, bg },
-  });
-  textClipped(
-    screen,
-    rect.x + 36,
-    y,
-    26,
-    `${pct}%${session.context.estimated ? '~ 概算' : ''}  ${formatTokens(session.context.usedTokens)}/${formatTokens(session.context.windowTokens)}`,
-    { fg: theme.text, bg },
-  );
-
+  const estimated = session.context.estimated ? '~' : '';
   const elapsed = Math.max(1, s.now - session.uptime.startedAt);
-  textRight(
-    screen,
-    rect.x + 2,
-    y,
-    inner,
-    `経過 ${formatDuration(elapsed)}  実働 ${formatDuration(session.uptime.activeMs)}  稼働率 ${formatPercent(utilization(session.uptime.activeMs, elapsed))}`,
-    { fg: theme.textDim, bg },
-  );
+
+  const uptimeFull = `経過 ${formatDuration(elapsed)}  実働 ${formatDuration(session.uptime.activeMs)}  稼働率 ${formatPercent(utilization(session.uptime.activeMs, elapsed))}`;
+  const uptimeShort = `経過 ${formatDuration(elapsed)}`;
+  const uptime = inner >= 62 ? uptimeFull : uptimeShort;
+  const ctxNumbers = `${pct}%${estimated}  ${formatTokens(session.context.usedTokens)}/${formatTokens(session.context.windowTokens)}`;
+
+  if (inner >= 76) {
+    screen.text(rect.x + 2, y, 'コンテキスト ', { fg: theme.textDim, bg });
+    drawGauge(screen, rect.x + 15, y, 20, session.context.ratio, {
+      filled: gaugeColor(theme, session.context.ratio),
+      emptyStyle: { fg: theme.border, bg },
+    });
+    textClipped(screen, rect.x + 36, y, 26, ctxNumbers, { fg: theme.text, bg });
+    textRight(screen, rect.x + 2, y, inner, uptime, { fg: theme.textDim, bg });
+  } else {
+    // ゲージを置く余裕が無い。数字と経過だけにして、重ならないよう幅を分ける。
+    const right = displayWidth(uptime);
+    textClipped(screen, rect.x + 2, y, Math.max(0, inner - right - 2), `文脈 ${ctxNumbers}`, {
+      fg: gaugeColor(theme, session.context.ratio),
+      bg,
+    });
+    textRight(screen, rect.x + 2, y, inner, uptime, { fg: theme.textDim, bg });
+  }
   y += 1;
 
   // 集計

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# スマホから SSH で入って、そのままダッシュボードに繋ぐためのもの。
+#
+#   ssh -p 2222 carbohydratepro@<ホスト> -t ~/agent_dashboard/scripts/dash
+#
+# tmux の中で動かすので、電波が切れて SSH が落ちても作業は続く。
+# 入り直して同じコマンドを打てば、そのまま元の画面に戻る。
+set -eu
+
+SESSION="${VO_TMUX_SESSION:-dash}"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# すでにあれば繋ぐだけ。無ければ作る。
+exec tmux new-session -A -s "$SESSION" -c "$DIR" "npm start"

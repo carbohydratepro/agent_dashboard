@@ -20,7 +20,7 @@ import type { Span } from '../markdown.ts';
 import { STATE_LABEL_JA } from '../theme.ts';
 import { activityMark, isBusy } from '../animation.ts';
 import { formatDuration } from './format.ts';
-import { cursorPosition, dropWidth, scrollOffsetFor, truncate } from '../width.ts';
+import { cursorPosition, displayWidth, dropWidth, scrollOffsetFor, truncate } from '../width.ts';
 
 export type ConvEntry =
   | { t: 'user'; text: string }
@@ -419,14 +419,16 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
     x += screen.text(x, y, label + elapsed, { fg: theme.state[session.state], bg: theme.bg });
 
     // いま何をしているか。無ければ空けておく（嘘を書かない）
+    const hint = 'Ctrl+C で中断';
     const doing = task ? lastActivity(task) : '';
     if (doing !== '') {
-      screen.text(x + 2, y, truncate(doing, Math.max(0, screen.width - x - 14)), {
-        fg: theme.textDim,
-        bg: theme.bg,
-      });
+      // 右の案内とぶつからないところまで。狭い画面ではここが詰まる。
+      const room = screen.width - x - displayWidth(hint) - 4;
+      if (room > 0) {
+        screen.text(x + 2, y, truncate(doing, room), { fg: theme.textDim, bg: theme.bg });
+      }
     }
-    textRight(screen, 0, y, screen.width - 1, 'Ctrl+C で中断', { fg: theme.textDim, bg: theme.bg });
+    textRight(screen, 0, y, screen.width - 1, hint, { fg: theme.textDim, bg: theme.bg });
     y += 1;
   }
 
