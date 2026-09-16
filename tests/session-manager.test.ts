@@ -14,7 +14,7 @@ import {
 } from '../src/core/drivers/mock.ts';
 import type { Scenario } from '../src/core/drivers/mock.ts';
 import type { ManagerConfig } from '../src/core/session-manager.ts';
-import type { Session } from '../src/core/types.ts';
+import type { RateLimitInfo, Session } from '../src/core/types.ts';
 
 interface Harness {
   manager: SessionManager;
@@ -534,6 +534,55 @@ describe('レート制限（SPEC §13.4）', () => {
 
     assert.equal(h.store.dashboard.rateLimit?.rateLimitType, 'five_hour');
     assert.equal(h.store.dashboard.rateLimit?.resetsAt, 1_786_566_000);
+  });
+
+  function limited(h: Harness, over: Partial<RateLimitInfo> = {}): void {
+    h.store.dashboard.rateLimit = {
+      status: 'rejected',
+      resetsAt: Math.floor(h.clock.now() / 1000) + 3_600,
+      rateLimitType: 'five_hour',
+      isUsingOverage: false,
+      ...over,
+    };
+  }
+
+  test('制限中は送れない', async () => {
+    const h = harness();
+    h.claude.setScenario(() => successfulTurn());
+    const emp = h.manager.createSession({ kind: 'claude' });
+    limited(h);
+    await assert.rejects(() => h.manager.dispatch(emp.id, 'やって'), /営業時間外/);
+  });
+
+  test('リセット時刻を過ぎていれば、保存された状態が古くても送れる', async () => {
+    // 状態はターンを走らせないと更新されない。ここで止めると抜け出せなくなる。
+    const h = harness();
+    h.claude.setScenario(() => successfulTurn());
+    const emp = h.manager.createSession({ kind: 'claude' });
+    limited(h);
+    h.clock.advance(3_600_000);
+    const task = await h.manager.dispatch(emp.id, 'やって');
+    assert.equal(task.status, 'done');
+  });
+
+  test('超過枠が使えるときと警告だけのときは送れる', async () => {
+    const h = harness();
+    h.claude.setScenario(() => successfulTurn());
+    const emp = h.manager.createSession({ kind: 'claude' });
+    limited(h, { isUsingOverage: true, overageStatus: 'allowed' });
+    await h.manager.dispatch(emp.id, '超過枠');
+    limited(h, { status: 'allowed_warning' });
+    await h.manager.dispatch(emp.id, '警告');
+    assert.equal(h.claude.calls.length, 2);
+  });
+
+  test('送れなかった控えは残る', async () => {
+    const h = harness();
+    const emp = h.manager.createSession({ kind: 'claude' });
+    const draft = h.manager.addDraft(emp.id, '消えては困る指示')!;
+    limited(h);
+    await assert.rejects(() => h.manager.sendDraft(emp.id, draft.id), /営業時間外/);
+    assert.deepEqual(emp.drafts.map((d) => d.text), ['消えては困る指示']);
   });
 });
 

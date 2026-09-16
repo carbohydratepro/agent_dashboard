@@ -1167,8 +1167,8 @@ export class App {
       lines.push({ text: '' });
       lines.push({ text: '枠のリセット', color: theme.accent, bold: true });
       lines.push({
-        text: `${isRateLimited(rl.status) ? '制限中' : '通常'}   あと ${formatDuration(Math.max(0, rl.resetsAt * 1000 - now))}   枠 ${rl.rateLimitType}`,
-        color: isRateLimited(rl.status) ? theme.gauge.critical : theme.text,
+        text: `${isRateLimited(rl, now) ? '制限中' : '通常'}   あと ${formatDuration(Math.max(0, rl.resetsAt * 1000 - now))}   枠 ${rl.rateLimitType}`,
+        color: isRateLimited(rl, now) ? theme.gauge.critical : theme.text,
         indent: 1,
       });
     }
@@ -1822,6 +1822,14 @@ export class App {
             `codex は /${parseCommand(text)?.name ?? ''} を解釈しません。/help で使えるものを出せます。`,
             this.theme.gauge.high,
           );
+          return false;
+        }
+        try {
+          this.manager.assertCanDispatch(session.id);
+        } catch (err) {
+          // 送れないときは書いた指示を入力欄に戻す
+          conv.input.setValue(text);
+          this.#notify(err instanceof Error ? err.message : String(err), this.theme.gauge.critical);
           return false;
         }
         this.#send(session, text);

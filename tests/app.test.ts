@@ -408,6 +408,22 @@ describe('会話モードのキー', () => {
     assert.equal(h.app.screenId, 'conversation', '画面は変わらない');
   });
 
+  test('送れなかった指示は入力欄に戻る', () => {
+    const h = harness();
+    h.hire();
+    h.manager.store.dashboard.rateLimit = {
+      status: 'rejected',
+      resetsAt: Math.floor(Date.now() / 1000) + 3_600,
+      rateLimitType: 'five_hour',
+      isUsingOverage: false,
+    };
+    press(h.app, '\r');
+    press(h.app, 'keepme');
+    press(h.app, '\r');
+    assert.equal(h.claude.calls.length, 0);
+    assert.ok(h.view().includes('keepme'), '入力欄に残る');
+  });
+
   test('Tab でサブエージェントの表示を切り替える', () => {
     const h = harness();
     h.hire();

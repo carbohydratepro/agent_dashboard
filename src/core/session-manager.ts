@@ -371,6 +371,8 @@ export class SessionManager {
     const session = this.store.require(sessionId);
     const draft = session.drafts.find((d) => d.id === draftId);
     if (!draft) throw new Error('その控えはもうありません');
+    // 送れないときは控えを残す
+    this.#assertCanDispatch(session, false);
     this.removeDraft(sessionId, draft.id);
     return this.dispatch(sessionId, draft.text);
   }
@@ -485,6 +487,30 @@ export class SessionManager {
     return this.#runTurn(sessionId, prompt, opts);
   }
 
+  /**
+   * いま指示を送れるか。送れなければ理由を投げる。
+   *
+   * 送る側は、これが通ってから入力欄や控えを片付けること。
+   * 弾かれたあとで片付けると、書いた指示が消えてしまう。
+   */
+  assertCanDispatch(sessionId: string): void {
+    this.#assertCanDispatch(this.store.require(sessionId), false);
+  }
+
+  #assertCanDispatch(session: Session, force: boolean): void {
+    if (session.archived) throw new Error(`${session.name} はアーカイブしています`);
+    if (!force && BUSY_STATES.has(session.state)) {
+      throw new Error(`${session.name} は実行中です`);
+    }
+    // レート制限に当たっている間は送っても失敗するだけ（SPEC §19）
+    if (isRateLimited(this.store.dashboard.rateLimit, this.#clock.now())) {
+      throw new Error('営業時間外です。レート制限が解除されるまで待ってください。');
+    }
+    if (!this.#drivers[session.kind]) {
+      throw new Error(`${session.kind} のドライバが登録されていません`);
+    }
+  }
+
   /** 結果を見たことにする。会話を開いたときに呼ぶ。 */
   markResultSeen(sessionId: string): void {
     const session = this.store.find(sessionId);
@@ -514,19 +540,11 @@ export class SessionManager {
 
   async #runTurn(sessionId: string, prompt: string, opts: DispatchOpts): Promise<Task> {
     const session = this.store.require(sessionId);
+    this.#assertCanDispatch(session, opts.force ?? false);
     // 新しく頼んだ時点で、前の結果は見たものとして扱う
     session.unseenResult = null;
-    if (session.archived) throw new Error(`${session.name} はアーカイブしています`);
-    if (!opts.force && BUSY_STATES.has(session.state)) {
-      throw new Error(`${session.name} は実行中です`);
-    }
-    // レート制限に当たっている間は送っても失敗するだけ（SPEC §19）
-    if (isRateLimited(this.store.dashboard.rateLimit?.status)) {
-      throw new Error('営業時間外です。レート制限が解除されるまで待ってください。');
-    }
 
-    const driver = this.#drivers[session.kind];
-    if (!driver) throw new Error(`${session.kind} のドライバが登録されていません`);
+    const driver = this.#drivers[session.kind]!;
 
     const startedAt = this.#clock.now();
     if (!opts.attach) this.#taskSeq += 1;
@@ -808,7 +826,7 @@ export class SessionManager {
         if (ev.overageResetsAt !== undefined) info.overageResetsAt = ev.overageResetsAt;
         this.store.dashboard.rateLimit = info;
         this.store.emit({ t: 'rate_limit', info });
-        if (isRateLimited(info.status)) {
+        if (isRateLimited(info, this.#clock.now())) {
           for (const other of this.store.active()) {
             if (!BUSY_STATES.has(other.state)) this.#setState(other, 'resting');
           }

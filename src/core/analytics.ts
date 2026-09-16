@@ -3,7 +3,7 @@
  * 数字はすべて実測（タスク数・トークン）で、擬似的な指標は持たない。
  */
 
-import type { Session } from './types.ts';
+import type { RateLimitInfo, Session } from './types.ts';
 import { tokensPerTask, utilization } from './stats.ts';
 
 export interface PeriodRecord {
@@ -167,7 +167,17 @@ export function sessionMetrics(
   };
 }
 
-/** レート制限で実行できない状態か */
-export function isRateLimited(status: string | undefined): boolean {
-  return status !== undefined && status !== 'allowed';
+/**
+ * レート制限で実行できない状態か。
+ *
+ * 状態が更新されるのはターンを走らせたときだけなので、保存された値は古くなる。
+ * リセット時刻を過ぎていたら、もう解除されたものとして扱う。
+ * そうしないと、送れない → 状態が更新されない、で抜け出せなくなる。
+ * `allowed_warning` は警告だけで実行はできる。超過枠が使えるときも実行できる。
+ */
+export function isRateLimited(info: RateLimitInfo | null | undefined, nowMs: number): boolean {
+  if (!info || info.status !== 'rejected') return false;
+  if (info.resetsAt * 1000 <= nowMs) return false;
+  if (info.isUsingOverage && info.overageStatus === 'allowed') return false;
+  return true;
 }
