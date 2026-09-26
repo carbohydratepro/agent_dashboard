@@ -11,7 +11,6 @@ import { drawGauge, wrapText } from '../src/tui/paint.ts';
 import { drawMainScreen } from '../src/tui/render.ts';
 import { formatDuration, formatTokens } from '../src/tui/views/format.ts';
 import {
-  activityText,
   columnsFor,
   flagsFor,
   modelFor,
@@ -21,10 +20,11 @@ import {
 } from '../src/tui/views/table.ts';
 import { ResourceMonitor, formatBytes } from '../src/core/resources.ts';
 import { activityMark, isBusy, thinkingLevel } from '../src/tui/animation.ts';
-import { recentActivity, recentTurns } from '../src/tui/views/detail.ts';
+import { completionEstimate, recentActivity, recentTurns } from '../src/tui/views/detail.ts';
 import { sampleDashboard, FIXTURE_NOW } from './fixtures/dashboard.ts';
 import { createDashboard } from '../src/core/store.ts';
 import type { Dashboard, Session } from '../src/core/types.ts';
+import { DEFAULT_THEME } from '../src/tui/theme.ts';
 
 // ---------------------------------------------------------------------------
 
@@ -269,9 +269,24 @@ describe('メイン画面', () => {
     assert.ok(text.includes('空き'));
   });
 
+  test('選択中のセッションは行全体の背景色が変わる', () => {
+    const screen = new Screen(100, 32, 'none');
+    drawMainScreen(screen, {
+      dashboard: sampleDashboard(),
+      selected: 0,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+    });
+
+    assert.equal(screen.get(0, 4).bg, DEFAULT_THEME.selectionBg, '選択行');
+    assert.notEqual(screen.get(0, 5).bg, DEFAULT_THEME.selectionBg, '未選択行');
+  });
+
   test('見出しに列名が出る', () => {
     const text = render().join('\n');
-    for (const header of ['セッション', '状態', 'コンテキスト', '経過', 'タスク', 'トークン']) {
+    for (const header of ['セッション', '状態', 'コンテキスト', 'タスク', 'トークン', 'タイトル', '作業ディレクトリ']) {
       assert.ok(text.includes(header), `${header} が無い`);
     }
   });
@@ -282,6 +297,41 @@ describe('メイン画面', () => {
     assert.ok(text.includes('認証まわりのリファクタ'), '実行中のタスク');
     assert.ok(text.includes('worktree vo/codex-1'));
     assert.ok(text.includes('稼働率'));
+  });
+
+  test('十分な実績がある実行中セッションだけ完了時刻の目安を出す', () => {
+    const dashboard = sampleDashboard();
+    const session = dashboard.sessions[0]!;
+    session.lifetime = {
+      startedAt: FIXTURE_NOW - 10_000_000,
+      activeMs: 3_000_000,
+      tasksCompleted: 5,
+      filesEdited: 0,
+      commandsRun: 0,
+      tokens: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 },
+      contextTokens: 0,
+      contextWindow: 200_000,
+      hasTokenUsage: false,
+      hasTiming: true,
+      typicalTurnMs: 600_000,
+      timedTurns: 5,
+      updatedAt: FIXTURE_NOW,
+    };
+    assert.deepEqual(completionEstimate(session), {
+      at: session.currentTask!.startedAt + 600_000,
+      basedOnTurns: 5,
+    });
+
+    const screen = new Screen(120, 36, 'none');
+    drawMainScreen(screen, {
+      dashboard,
+      selected: 0,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+    });
+    assert.ok(screen.toStrings().some((row) => row.includes('目安')));
   });
 
   test('ヘッダーとキーバーが出る', () => {
@@ -317,11 +367,11 @@ describe('メイン画面', () => {
   });
 
   test('狭いと列を落とし、要るものは残す', () => {
-    // 何が・どうなっている・何をしている、は最後まで守る
+    // 何が・どうなっている・どこで作業する、は最後まで守る
     const narrow = columnsFor(45).map((c) => c.key);
     assert.deepEqual(narrow.includes('name'), true);
     assert.deepEqual(narrow.includes('context'), true);
-    assert.deepEqual(narrow.includes('activity'), true);
+    assert.deepEqual(narrow.includes('workspace'), true);
     assert.deepEqual(narrow.includes('tokens'), false, '数字ものから落とす');
     assert.deepEqual(narrow.includes('model'), false);
   });
@@ -460,74 +510,15 @@ describe('マシンの負荷', () => {
   });
 });
 
-describe('いま何をしているか', () => {
-  test('動いていれば実行中のツールを出す', () => {
+describe('タイトルと作業ディレクトリの列', () => {
+  test('見出しと値を別々の列に出す', () => {
     const dashboard = sampleDashboard();
     const session = dashboard.sessions[0]!;
+    session.conversationTitle = '認証処理を改善する';
+    session.workspace.actualCwd = '/home/dev/agent-worktree';
     session.state = 'working';
-    session.currentTask = {
-      id: 't1',
-      sessionId: session.id,
-      prompt: 'テストを直して',
-      startedAt: FIXTURE_NOW,
-      endedAt: null,
-      status: 'running',
-      events: [
-        { t: 'tool_start', name: 'Read', detail: 'a.ts', toolUseId: '1' },
-        { t: 'tool_start', name: 'Bash', detail: 'npm test', toolUseId: '2' },
-      ],
-      summary: null,
-      recoveredFrom: null,
-      pid: null,
-      outFile: null,
-    };
 
-    const a = activityText(session);
-    assert.equal(a.busy, true);
-    assert.match(a.text, /Bash.*npm test/, '最後に始まったものを出す');
-  });
-
-  test('ツールを呼ぶ前は指示そのものを出す', () => {
-    const dashboard = sampleDashboard();
-    const session = dashboard.sessions[0]!;
-    session.state = 'thinking';
-    session.currentTask = {
-      id: 't1',
-      sessionId: session.id,
-      prompt: 'テストを直して',
-      startedAt: FIXTURE_NOW,
-      endedAt: null,
-      status: 'running',
-      events: [],
-      summary: null,
-      recoveredFrom: null,
-      pid: null,
-      outFile: null,
-    };
-
-    assert.deepEqual(activityText(session), { text: 'テストを直して', busy: true });
-  });
-
-  test('一覧の行に実際に出る', () => {
-    // 列の幅計算から外れていると、関数が正しくても画面には出ない
-    const dashboard = sampleDashboard();
-    const session = dashboard.sessions[0]!;
-    session.state = 'working';
-    session.currentTask = {
-      id: 't1',
-      sessionId: session.id,
-      prompt: 'テストを直して',
-      startedAt: FIXTURE_NOW,
-      endedAt: null,
-      status: 'running',
-      events: [{ t: 'tool_start', name: 'Bash', detail: 'npm run check', toolUseId: '1' }],
-      summary: null,
-      recoveredFrom: null,
-      pid: null,
-      outFile: null,
-    };
-
-    const screen = new Screen(140, 30, 'none');
+    const screen = new Screen(170, 30, 'none');
     drawMainScreen(screen, {
       dashboard,
       selected: 0,
@@ -538,21 +529,25 @@ describe('いま何をしているか', () => {
     });
     const rows = screen.toStrings();
 
-    assert.ok(
-      rows.some((r) => r.includes('npm run check')),
-      '実行中のコマンドが行に出ている',
-    );
-    assert.ok(rows[2]?.includes('いま何をしているか'), '見出しが出ている');
+    assert.ok(rows[2]?.includes('タイトル'), 'タイトル列の見出しが出る');
+    assert.ok(rows[2]?.includes('作業ディレクトリ'), '作業ディレクトリ列の見出しが出る');
+    assert.ok(rows.some((r) => r.includes('認証処理を改善する')), '生成タイトルが出る');
+    assert.ok(rows.some((r) => r.includes('/home/dev/agent-worktree')), '実際の作業ディレクトリが出る');
   });
 
-  test('止まっていれば作業ディレクトリを出す', () => {
+  test('タイトルがまだ無ければダッシュを出す', () => {
     const dashboard = sampleDashboard();
-    const session = dashboard.sessions[0]!;
-    session.state = 'idle';
-
-    const a = activityText(session);
-    assert.equal(a.busy, false);
-    assert.equal(a.text, session.workspace.requestedCwd);
+    dashboard.sessions[0]!.conversationTitle = null;
+    const screen = new Screen(170, 30, 'none');
+    drawMainScreen(screen, {
+      dashboard,
+      selected: 0,
+      frame: 0,
+      now: FIXTURE_NOW,
+      expanded: false,
+      animate: false,
+    });
+    assert.ok(screen.toStrings().some((row) => row.includes('—')));
   });
 });
 
@@ -679,7 +674,7 @@ describe('使っているモデルの表示', () => {
     const dashboard = sampleDashboard();
     dashboard.sessions[0]!.kind = 'codex';
 
-    const screen = new Screen(130, 32, 'none');
+    const screen = new Screen(140, 32, 'none');
     drawMainScreen(screen, {
       dashboard,
       selected: 0,
@@ -695,13 +690,13 @@ describe('使っているモデルの表示', () => {
     assert.ok(rows.some((r) => r.includes('gpt-6-astra/high')));
   });
 
-  test('狭い画面では列を出さず、作業内容を潰さない', () => {
-    // モデル名は長い。最小幅で出すと作業内容が読めなくなる。
+  test('狭い画面では列を出さず、タイトルと作業ディレクトリを潰さない', () => {
+    // モデル名は長い。最小幅で出すとタイトルとディレクトリが読めなくなる。
     assert.deepEqual(
       columnsFor(100).map((c) => c.key).includes('model'),
       false,
     );
-    assert.equal(columnsFor(130).map((c) => c.key).includes('model'), true);
+    assert.equal(columnsFor(140).map((c) => c.key).includes('model'), true);
 
     const dashboard = sampleDashboard();
     const screen = new Screen(100, 32, 'none');

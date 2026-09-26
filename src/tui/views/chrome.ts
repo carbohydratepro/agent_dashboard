@@ -93,6 +93,7 @@ export function drawKeyBar(screen: Screen, rect: Rect, hints: KeyHint[], theme: 
 export const MAIN_HINTS: KeyHint[] = [
   { key: '↑↓', label: '選択' },
   { key: 'Enter', label: '開く' },
+  { key: 'ドラッグ', label: 'コピー' },
   { key: 'n', label: '追加' },
   { key: 'X', label: '解放' },
   { key: 'p', label: '控え' },

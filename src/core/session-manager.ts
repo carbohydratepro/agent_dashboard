@@ -14,6 +14,7 @@ import type {
   RateLimitInfo,
   Role,
   Session,
+  SessionLifetime,
   SessionState,
   SessionStats,
   Subagent,
@@ -48,6 +49,8 @@ export interface ManagerConfig {
   approvalPrompt: string;
   /** 「a」で常時承認にしたツール（SPEC §18 approvals.alwaysAllow） */
   alwaysAllowedTools: string[];
+  /** 同じ作業ディレクトリのターンを順番に実行する。falseなら別セッションは並行実行。 */
+  serializeByCwd: boolean;
 }
 
 const DEFAULT_CONFIG: ManagerConfig = {
@@ -56,6 +59,7 @@ const DEFAULT_CONFIG: ManagerConfig = {
   defaultCwd: process.cwd(),
   approvalPrompt: '承認しました。先ほどの操作をそのまま実行してください。',
   alwaysAllowedTools: [],
+  serializeByCwd: true,
 };
 
 export interface SessionManagerDeps {
@@ -67,7 +71,7 @@ export interface SessionManagerDeps {
   /**
    * 同一ディレクトリでの同時実行を防ぐ（SPEC §9.4）。
    * worktree で隔離されていれば実質的に競合しないが、
-   * 同居を選んだセッションどうしはここで直列化される。
+   * serializeByCwd が true の場合、同居セッションどうしを直列化する。
    */
   locks?: LockManager;
   /** CLI の生出力を受け取るフック。raw.jsonl への追記に使う（SPEC §14.2） */
@@ -86,6 +90,8 @@ export interface CreateOpts {
   role?: Role;
   /** 指定すると自動採番せずこの名前を使う */
   name?: string;
+  /** CLI が生成した会話タイトル。既存セッションの取り込み時に引き継ぐ。 */
+  conversationTitle?: string | null;
   /** codex のみ。作成時に固定され、以後変更できない（SPEC §5.2） */
   sandbox?: string | null;
   model?: string | null;
@@ -103,6 +109,8 @@ export interface CreateOpts {
   agentSessionId?: string;
   /** 取り込んだ会話の実績。ログから数えた実数（SPEC §8.1.1） */
   carryOver?: CarriedExperience;
+  /** CLI ログを解析済みなら、会話開始時点からの実績も同時に載せる。 */
+  lifetime?: SessionLifetime | null;
 }
 
 export interface DispatchOpts {
@@ -196,6 +204,7 @@ export class SessionManager {
       reasoningOverride: null,
       permissionMode: opts.permissionMode ?? null,
       name: opts.name ?? nextName(opts.kind, this.store.usedNames()),
+      conversationTitle: opts.conversationTitle?.trim() || null,
       color: colorForSlot(slot),
       role: opts.role ?? 'general',
       state: 'idle',
@@ -228,6 +237,7 @@ export class SessionManager {
       },
       uptime: { startedAt: now, activeMs: 0, lastActiveAt: now },
       stats: applyCarryOver(createStats(), opts.carryOver),
+      lifetime: opts.lifetime ?? null,
       lastError: null,
       archived: false,
     };
@@ -235,6 +245,35 @@ export class SessionManager {
     this.store.dashboard.sessions.push(session);
     this.store.emit({ t: 'session_added', session });
     return session;
+  }
+
+  /** CLI 側で生成・変更された会話タイトルを一覧へ反映する。 */
+  setConversationTitle(id: string, title: string): void {
+    const session = this.store.require(id);
+    const normalized = title.trim();
+    if (normalized === '' || session.conversationTitle === normalized) return;
+    session.conversationTitle = normalized;
+    this.store.emit({ t: 'session_changed', sessionId: id });
+  }
+
+  /** CLI ログから復元した全期間実績を、月次会計とは分けて反映する。 */
+  setLifetime(id: string, lifetime: SessionLifetime): void {
+    const session = this.store.require(id);
+    session.lifetime = lifetime;
+    if (lifetime.hasTokenUsage) {
+      session.context.usedTokens = lifetime.contextTokens;
+      if (lifetime.contextWindow > 0) session.context.windowTokens = lifetime.contextWindow;
+      session.context.ratio = session.context.windowTokens > 0
+        ? Math.min(1, lifetime.contextTokens / session.context.windowTokens)
+        : 0;
+      if (session.kind === 'codex') {
+        // codex exec resume の usage は会話全体の累計。ここを 0 のままにすると、
+        // 取り込み後の最初のターンだけ過去分を再び加算してしまう。
+        session.context.prevInputTokens = lifetime.tokens.inputTokens;
+        session.context.prevOutputTokens = lifetime.tokens.outputTokens;
+      }
+    }
+    this.store.emit({ t: 'session_changed', sessionId: id });
   }
 
   /** 保存されていたセッションを一覧に戻す（SPEC §14.3 手順 2） */
@@ -369,10 +408,27 @@ export class SessionManager {
    */
   async sendDraft(sessionId: string, draftId: string): Promise<Task> {
     const session = this.store.require(sessionId);
-    const draft = session.drafts.find((d) => d.id === draftId);
+    const index = session.drafts.findIndex((d) => d.id === draftId);
+    const draft = session.drafts[index];
     if (!draft) throw new Error('その控えはもうありません');
+
+    const restore = (): void => {
+      if (session.drafts.some((d) => d.id === draft.id)) return;
+      session.drafts.splice(Math.min(index, session.drafts.length), 0, draft);
+      this.store.emit({ t: 'session_changed', sessionId });
+    };
+
     this.removeDraft(sessionId, draft.id);
-    return this.dispatch(sessionId, draft.text);
+    try {
+      const task = await this.dispatch(sessionId, draft.text);
+      // CLI 起動失敗やAPIエラーなら、利用者が直して再送できるよう控えへ戻す。
+      if (task.status === 'failed') restore();
+      return task;
+    } catch (err) {
+      // 実行中・レート制限など、送信を開始できなかった場合も失わない。
+      restore();
+      throw err;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -485,6 +541,19 @@ export class SessionManager {
     return this.#runTurn(sessionId, prompt, opts);
   }
 
+  /** 実行中の会話へ追加指示を渡す。二重起動や中断はしない。 */
+  async steer(sessionId: string, prompt: string): Promise<void> {
+    const session = this.store.require(sessionId);
+    const driver = this.#drivers[session.kind];
+    if (!driver?.steer) throw new Error('この実行方式は途中送信に未対応です。文章は控えに保存しました。');
+    const task = session.currentTask;
+    if (!this.isRunning(sessionId) || task?.status !== 'running' ||
+        !session.agentSessionId || task.pid === null || task.outFile === null) {
+      throw new Error('追加指示を送れる状態になる前、または実行終了後でした。文章は控えに保存しました。');
+    }
+    await driver.steer(session.agentSessionId, prompt, { pid: task.pid, outFile: task.outFile });
+  }
+
   /** 結果を見たことにする。会話を開いたときに呼ぶ。 */
   markResultSeen(sessionId: string): void {
     const session = this.store.find(sessionId);
@@ -514,6 +583,14 @@ export class SessionManager {
 
   async #runTurn(sessionId: string, prompt: string, opts: DispatchOpts): Promise<Task> {
     const session = this.store.require(sessionId);
+    // ディレクトリの並行利用と、同じ会話の二重実行は別。forceでも二重起動させない。
+    if (this.isRunning(sessionId)) throw new Error(`${session.name} は実行中です`);
+    if (session.agentSessionId) {
+      const owner = this.store.dashboard.sessions.find((other) =>
+        other.id !== sessionId && other.kind === session.kind &&
+        other.agentSessionId === session.agentSessionId && this.isRunning(other.id));
+      if (owner) throw new Error(`同じ会話を ${owner.name} が実行中です`);
+    }
     // 新しく頼んだ時点で、前の結果は見たものとして扱う
     session.unseenResult = null;
     if (session.archived) throw new Error(`${session.name} はアーカイブしています`);
@@ -575,7 +652,9 @@ export class SessionManager {
 
     try {
       // 同じ場所を触るセッションがいれば、ここで順番を待つ
-      if (this.#locks) lock = await this.#locks.acquire(session.workspace.actualCwd, session.id);
+      if (this.#locks && this.#config.serializeByCwd) {
+        lock = await this.#locks.acquire(session.workspace.actualCwd, session.id);
+      }
 
       const stream = opts.attach
         ? driver.attach!({

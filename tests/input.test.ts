@@ -4,6 +4,9 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { decodeKeys, isPrintable, keyToString } from '../src/tui/input.ts';
+import { MOUSE_OFF, MOUSE_ON } from '../src/tui/ansi.ts';
+import { NodeTerminal } from '../src/tui/terminal.ts';
+import { TextInput, layoutTextInput } from '../src/tui/widgets/textinput.ts';
 
 function one(raw: string) {
   const keys = decodeKeys(raw);
@@ -12,6 +15,11 @@ function one(raw: string) {
 }
 
 describe('矢印とカーソル系', () => {
+  test('F2 を SS3・CSI・チルダ形式で受ける', () => {
+    for (const raw of ['\x1bOQ', '\x1b[Q', '\x1b[12~']) {
+      assert.equal(one(raw).name, 'f2');
+    }
+  });
   test('矢印キー', () => {
     assert.equal(one('\x1b[A').name, 'up');
     assert.equal(one('\x1b[B').name, 'down');
@@ -38,6 +46,38 @@ describe('矢印とカーソル系', () => {
     assert.equal(k.ctrl, true);
     const shifted = one('\x1b[1;2A');
     assert.equal(shifted.shift, true);
+  });
+});
+
+describe('複数行入力の上下移動', () => {
+  test('明示改行した行を同じ表示桁で上下する', () => {
+    const input = new TextInput();
+    input.setValue('abc\ndefgh\nx');
+
+    assert.equal(input.moveVertical(-1, 80), true);
+    input.insert('!');
+    assert.equal(input.value, 'abc\nd!efgh\nx');
+  });
+
+  test('画面幅で折り返した行も上下できる', () => {
+    const input = new TextInput();
+    input.setValue('abcdef');
+
+    assert.deepEqual(layoutTextInput(input.value, input.cursor, 3).lines, ['abc', 'def']);
+    assert.equal(input.moveVertical(-1, 3), true);
+    input.insert('!');
+    assert.equal(input.value, 'abc!def');
+  });
+
+  test('入力の先頭を越えたときだけ送信履歴へ移れる', () => {
+    const input = new TextInput();
+    input.remember('前の指示');
+    input.setValue('上\n下');
+
+    assert.equal(input.moveVertical(-1, 80), true, 'まず入力内の上の行へ動く');
+    assert.equal(input.moveVertical(-1, 80), false, '先頭では履歴側へ渡す');
+    assert.equal(input.historyPrev(), true);
+    assert.equal(input.value, '前の指示');
   });
 });
 
@@ -142,6 +182,33 @@ describe('改行のキー（端末に奪われても打てるように）', () =
 // ---------------------------------------------------------------------------
 
 describe('マウスホイール', () => {
+  test('実端末ではホイール報告を有効にする', () => {
+    let written = '';
+    const input = {
+      isTTY: false,
+      resume() {},
+      pause() {},
+      on() {},
+      off() {},
+    } as unknown as NodeJS.ReadStream;
+    const output = {
+      columns: 80,
+      rows: 24,
+      write(data: string) {
+        written += data;
+        return true;
+      },
+      on() {},
+      off() {},
+    } as unknown as NodeJS.WriteStream;
+    const terminal = new NodeTerminal(input, output);
+
+    terminal.enter();
+    assert.ok(written.includes(MOUSE_ON));
+    terminal.exit();
+    assert.ok(written.includes(MOUSE_OFF));
+  });
+
   test('SGR の報告をホイールとして読む', () => {
     assert.deepEqual(decodeKeys('\x1b[<64;10;5M').map((k) => k.name), ['wheelup']);
     assert.deepEqual(decodeKeys('\x1b[<65;10;5M').map((k) => k.name), ['wheeldown']);
@@ -152,11 +219,21 @@ describe('マウスホイール', () => {
     assert.deepEqual(decodeKeys('\x1b[<64;180;42M').map((k) => k.name), ['wheelup']);
   });
 
-  test('クリックは捨てる', () => {
-    // 使わないものを文字として入力欄に流し込まない
-    assert.deepEqual(decodeKeys('\x1b[<0;10;5M'), []);
-    assert.deepEqual(decodeKeys('\x1b[<0;10;5m'), []);
+  test('左ドラッグは0始まりの座標付きで読む。右クリック・不正座標は捨てる', () => {
+    const down = one('\x1b[<0;10;5M');
+    assert.equal(down.name, 'mousedown');
+    assert.equal(down.x, 9);
+    assert.equal(down.y, 4);
+    assert.equal(one('\x1b[<32;20;6M').name, 'mousedrag');
+    assert.equal(one('\x1b[<0;20;6m').name, 'mouseup');
+    assert.equal(one('\x1b[<4;10;5M').shift, true);
+    assert.equal(one('\x1b[<68;10;5M').name, 'wheelup');
     assert.deepEqual(decodeKeys('\x1b[<2;10;5M'), []);
+    assert.deepEqual(decodeKeys('\x1b[<35;10;5M'), []);
+    assert.deepEqual(decodeKeys('\x1b[<0;0;5M'), []);
+    assert.deepEqual(decodeKeys('\x1b[<0;10M'), []);
+    assert.ok(MOUSE_ON.includes('\x1b[?1002h'));
+    assert.ok(!MOUSE_ON.includes('\x1b[?1003h'));
   });
 
   test('従来のキーは変わらない', () => {

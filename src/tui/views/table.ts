@@ -13,8 +13,9 @@ import { activityMark } from '../animation.ts';
 import { drawGauge, fillRect, hline, textClipped, textRight } from '../paint.ts';
 import { displayWidth, padEnd, padStart, truncate } from '../width.ts';
 import { formatDuration, formatTokens } from './format.ts';
+import { displayStartedAt, displayStats } from '../../core/stats.ts';
 
-/** 列の定義。幅は固定で、余りは cwd 列に回す。 */
+/** 列の定義。幅 0 のタイトルと作業ディレクトリへ余りを分配する。 */
 export interface Column {
   key: string;
   header: string;
@@ -34,7 +35,8 @@ const COLUMNS: Column[] = [
   { key: 'tokens', header: 'トークン', width: 8, align: 'right' },
   { key: 'flags', header: '', width: 4 },
   { key: 'model', header: 'モデル', width: 20 },
-  { key: 'activity', header: 'いま何をしているか', width: 0 },
+  { key: 'title', header: 'タイトル', width: 0 },
+  { key: 'workspace', header: '作業ディレクトリ', width: 0 },
 ];
 
 /**
@@ -42,12 +44,26 @@ const COLUMNS: Column[] = [
  *
  * スマホから SSH で覗くと 40 桁ほどしかない。狭いところから順に、
  * 無くても困らないものを落としていく。残す順は
- * 「何が・どうなっている・何をしている」を最後まで守る。
+ * 「何が・どうなっている・どこで作業する」を最後まで守る。
  */
-export const MODEL_COLUMN_MIN_WIDTH = 124;
+export const MODEL_COLUMN_MIN_WIDTH = 140;
+
+const FLEX_MIN_WIDTH = 12;
+
+function flexibleMinimum(column: Column): number {
+  if (column.key === 'workspace') return 18;
+  if (column.key === 'title') return 10;
+  return FLEX_MIN_WIDTH;
+}
+
+function minimumFlexibleWidth(columns: Column[]): number {
+  return columns
+    .filter((column) => column.width === 0)
+    .reduce((sum, column) => sum + flexibleMinimum(column), 0);
+}
 
 /** 落としていく順（先に書いたものから落とす） */
-const DROP_ORDER = ['model', 'edits', 'cmds', 'uptime', 'tokens', 'tasks', 'flags', 'state'];
+const DROP_ORDER = ['model', 'edits', 'cmds', 'uptime', 'tokens', 'tasks', 'flags', 'state', 'title'];
 
 export function columnsFor(width: number): Column[] {
   // 可変幅の列に最低これだけは残す
@@ -56,7 +72,7 @@ export function columnsFor(width: number): Column[] {
 
   for (const key of DROP_ORDER) {
     const fixed = columns.reduce((sum, c) => sum + c.width + GAP, 0);
-    if (fixed + need <= width) break;
+    if (fixed + Math.max(need, minimumFlexibleWidth(columns)) <= width) break;
     columns = columns.filter((c) => c.key !== key);
   }
 
@@ -97,10 +113,21 @@ export function modelFor(session: Session, defaults?: CodexDefaults): string {
 
 const GAP = 1;
 
-/** 可変幅の列（作業内容）に回せる幅を計算する */
-function flexWidth(total: number, columns: Column[]): number {
+/** タイトルと作業ディレクトリへ、残った幅を均等に配る。 */
+function columnWidths(total: number, columns: Column[]): number[] {
   const fixed = columns.reduce((sum, c) => sum + c.width + GAP, 0);
-  return Math.max(12, total - fixed - 1);
+  const flexible = columns.filter((column) => column.width === 0);
+  const minimum = minimumFlexibleWidth(columns);
+  const available = Math.max(minimum, total - fixed - 1);
+  let extra = Math.max(0, available - minimum);
+  let remainingFlexible = flexible.length;
+  return columns.map((column) => {
+    if (column.width !== 0) return column.width;
+    const share = remainingFlexible > 0 ? Math.ceil(extra / remainingFlexible) : 0;
+    extra -= share;
+    remainingFlexible -= 1;
+    return flexibleMinimum(column) + share;
+  });
 }
 
 export interface TableViewState {
@@ -124,30 +151,6 @@ export function tableRows(dashboard: Dashboard): Array<Session | null> {
   const rows: Array<Session | null> = [];
   for (let i = 0; i < dashboard.slotCount; i += 1) rows.push(bySlot.get(i) ?? null);
   return rows;
-}
-
-/**
- * その行に出す「いま何をしているか」。
- *
- * 動いている間は最後に始まったツールを出す。止まっているときに出すものが
- * 無いので、代わりに作業ディレクトリを出す（列を 2 つに割るには幅が足りない）。
- */
-export function activityText(session: Session): { text: string; busy: boolean } {
-  const task = session.currentTask;
-  if (task && BUSY_STATES.has(session.state)) {
-    for (let i = task.events.length - 1; i >= 0; i -= 1) {
-      const ev = task.events[i]!;
-      if (ev.t === 'tool_start') {
-        return { text: ev.detail ? `${ev.name}  ${ev.detail}` : ev.name, busy: true };
-      }
-      if (ev.t === 'subagent_start') {
-        return { text: `Agent (${ev.agentType})  ${ev.description}`, busy: true };
-      }
-    }
-    // ツールを呼ぶ前。何を頼まれたかを出しておく。
-    if (task.prompt !== '') return { text: task.prompt, busy: true };
-  }
-  return { text: session.workspace.requestedCwd, busy: false };
 }
 
 /**
@@ -188,8 +191,7 @@ export function drawTable(screen: Screen, rect: Rect, s: TableViewState): void {
   fillRect(screen, rect.x, rect.y, rect.w, rect.h, theme.bg);
 
   const columns = columnsFor(rect.w);
-  const flex = flexWidth(rect.w, columns);
-  const widths = columns.map((c) => (c.key === 'activity' ? flex : c.width));
+  const widths = columnWidths(rect.w, columns);
 
   // 見出し
   let x = rect.x + 1;
@@ -212,7 +214,8 @@ export function drawTable(screen: Screen, rect: Rect, s: TableViewState): void {
     const y = rect.y + 2 + i;
     const session = rows[row]!;
     const selected = row === s.selected;
-    const bg = selected ? theme.panelBg : row % 2 === 1 ? theme.rowAlt : theme.bg;
+    // 文字色だけでは現在行を見失うため、選択行は明確な面の色で塗る。
+    const bg = selected ? theme.selectionBg : row % 2 === 1 ? theme.rowAlt : theme.bg;
 
     fillRect(screen, rect.x, y, rect.w, 1, bg);
     if (session) drawRow(screen, rect, y, session, columns, widths, bg, selected, s);
@@ -295,24 +298,20 @@ function drawRow(
     x += ctxW + GAP;
   }
 
-  const elapsed = s.now - session.uptime.startedAt;
+  const stats = displayStats(session);
+  const elapsed = s.now - displayStartedAt(session);
   cell('uptime', formatDuration(elapsed), theme.textDim);
-  cell('tasks', String(session.stats.tasksCompleted), theme.text);
-  cell('edits', String(session.stats.filesEdited), theme.textDim);
-  cell('cmds', String(session.stats.commandsRun), theme.textDim);
-  cell('tokens', formatTokens(session.stats.totalTokensIn + session.stats.totalTokensOut), theme.textDim);
+  cell('tasks', String(stats.tasksCompleted), theme.text);
+  cell('edits', String(stats.filesEdited), theme.textDim);
+  cell('cmds', String(stats.commandsRun), theme.textDim);
+  cell('tokens', formatTokens(stats.totalTokensIn + stats.totalTokensOut), theme.textDim);
   cell('flags', flagsFor(session), theme.accent);
   cell('model', modelFor(session, s.codexDefaults) || '—', theme.textDim);
+  cell('title', session.conversationTitle ?? '—', session.conversationTitle ? theme.text : theme.textDim);
 
-  // 動いていれば作業内容、止まっていれば作業ディレクトリ。
   // パスは末尾のほうが情報量が多いので、長ければ先頭を省く。
-  const activity = activityText(session);
-  const activityWidth = widths[indexOf('activity')] ?? 20;
-  cell(
-    'activity',
-    activity.busy ? activity.text : tailPath(activity.text, activityWidth),
-    activity.busy ? theme.text : theme.system,
-  );
+  const workspaceWidth = widths[indexOf('workspace')] ?? 20;
+  cell('workspace', tailPath(session.workspace.actualCwd, workspaceWidth), theme.system);
 }
 
 function drawEmptyRow(

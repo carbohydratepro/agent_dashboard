@@ -12,7 +12,7 @@ import type { Screen } from '../screen.ts';
 import type { AgentEvent, Session, Task } from '../../core/types.ts';
 import type { TranscriptItem } from '../../core/sessions.ts';
 import type { Theme } from '../theme.ts';
-import { TextInput } from '../widgets/textinput.ts';
+import { layoutTextInput, TextInput } from '../widgets/textinput.ts';
 import { drawBox, fillRect, hline, textClipped, textRight, wrapText } from '../paint.ts';
 import { renderMarkdown } from '../markdown.ts';
 import type { CompletionState } from '../completion.ts';
@@ -20,7 +20,7 @@ import type { Span } from '../markdown.ts';
 import { STATE_LABEL_JA } from '../theme.ts';
 import { activityMark, isBusy } from '../animation.ts';
 import { formatDuration } from './format.ts';
-import { cursorPosition, displayWidth, dropWidth, scrollOffsetFor, truncate } from '../width.ts';
+import { displayWidth, truncate } from '../width.ts';
 
 export type ConvEntry =
   | { t: 'user'; text: string }
@@ -50,6 +50,7 @@ export class ConversationState {
 
   pushUser(text: string): void {
     this.#push({ t: 'user', text });
+    this.input.remember(text);
     this.#assistantOpen = false;
     this.scrollToBottom();
   }
@@ -66,7 +67,10 @@ export class ConversationState {
   seedFromTranscript(items: readonly TranscriptItem[], truncated: boolean): void {
     if (truncated) this.pushSystem('ここより前のやり取りは省略しています');
     for (const item of items) {
-      if (item.t === 'user') this.#push({ t: 'user', text: item.text });
+      if (item.t === 'user') {
+        this.#push({ t: 'user', text: item.text });
+        this.input.remember(item.text);
+      }
       else if (item.t === 'assistant') this.#push({ t: 'assistant', text: item.text });
       else this.#push({ t: 'tool', name: item.name, detail: item.detail, ok: true, nested: false });
     }
@@ -77,11 +81,15 @@ export class ConversationState {
   /** 進行中タスクのイベントから履歴を組み立て直す（画面を開いたとき用） */
   seedFromTask(task: Task): void {
     this.entries.push({ t: 'user', text: task.prompt });
+    this.input.remember(task.prompt);
     for (const ev of task.events) this.applyEvent(ev);
   }
 
   applyEvent(ev: AgentEvent): void {
     switch (ev.t) {
+      case 'user_message':
+        this.pushUser(ev.text);
+        break;
       case 'text': {
         if (ev.parentToolUseId) {
           this.#push({ t: 'subagent', label: 'サブエージェント', text: ev.delta });
@@ -285,9 +293,10 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
   const { theme, session: session, conversation: conv } = s;
   fillRect(screen, 0, 0, screen.width, screen.height, theme.bg);
 
-  // 枠の上下 2 行ぶんを足す。3 未満だと中身を書く場所が無くなる。
-  const inputLineCount = conv.input.value.split('\n').length;
-  const inputHeight = Math.min(7, Math.max(3, inputLineCount + 2));
+  // 長い 1 行も画面幅で折る。入力欄は画面のおよそ 1/3、最大 10 行まで広がる。
+  const inputLayout = layoutTextInput(conv.input.value, conv.input.cursor, screen.width - 6);
+  const maxInputRows = Math.max(1, Math.min(10, Math.floor(screen.height / 3)));
+  const inputHeight = Math.min(maxInputRows + 2, Math.max(3, inputLayout.lines.length + 2));
   const memoRow = session.drafts.length > 0 ? 1 : 0;
 
   // 動いている間は 1 行使って、止まっているのか考えているのかを示す。
@@ -419,7 +428,7 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
     x += screen.text(x, y, label + elapsed, { fg: theme.state[session.state], bg: theme.bg });
 
     // いま何をしているか。無ければ空けておく（嘘を書かない）
-    const hint = 'Ctrl+C で中断';
+    const hint = session.kind === 'codex' ? 'Enter で追加指示 / Ctrl+C で中断' : 'Ctrl+C で中断';
     const doing = task ? lastActivity(task) : '';
     if (doing !== '') {
       // 右の案内とぶつからないところまで。狭い画面ではここが詰まる。
@@ -448,32 +457,40 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
   }
 
   // 入力欄
+  const visibleInputRows = inputHeight - 2;
+  const inputStart = Math.max(
+    0,
+    Math.min(
+      inputLayout.cursorLine - visibleInputRows + 1,
+      inputLayout.lines.length - visibleInputRows,
+    ),
+  );
+  const inputEnd = Math.min(inputLayout.lines.length, inputStart + visibleInputRows);
+  const inputTitle =
+    inputLayout.lines.length > visibleInputRows
+      ? ` 入力 ${inputStart + 1}–${inputEnd}/${inputLayout.lines.length} `
+      : undefined;
   drawBox(screen, 0, y, screen.width, inputHeight, {
     style: { fg: theme.border, bg: theme.bg },
+    title: inputTitle,
+    titleStyle: { fg: theme.textDim, bg: theme.bg },
   });
-  // カーソルが右端を越えたら横に流す。全角を打ち続けても入力が見えなくならない。
-  const inputLines = conv.input.value.split('\n');
-  const available = screen.width - 6;
-  const pos = cursorPosition(conv.input.value, conv.input.cursor);
-  const offset = scrollOffsetFor(pos.column, available);
 
-  for (let i = 0; i < inputHeight - 2; i += 1) {
-    const raw = inputLines[i];
+  for (let i = 0; i < visibleInputRows; i += 1) {
+    const lineIndex = inputStart + i;
+    const raw = inputLayout.lines[lineIndex];
     if (raw === undefined) break;
-    const prefix = i === 0 ? '> ' : '  ';
-    textClipped(screen, 2, y + 1 + i, screen.width - 4, prefix + dropWidth(raw, offset), {
+    const prefix = lineIndex === 0 ? '> ' : '  ';
+    textClipped(screen, 2, y + 1 + i, screen.width - 4, prefix + raw, {
       fg: theme.userText,
       bg: theme.bg,
     });
   }
-  if (offset > 0) {
-    screen.set(2, y + 1, '‹', { fg: theme.textDim, bg: theme.bg });
-  }
   // 端末の本物のカーソルをここに置く。日本語の未確定文字列はカーソルの
   // 位置に出るので、置かないと打っている最中の文字が見えない。
   screen.cursor = {
-    x: Math.min(4 + pos.column - offset, screen.width - 2),
-    y: y + 1 + Math.min(pos.line, inputHeight - 3),
+    x: Math.min(4 + inputLayout.cursorColumn, screen.width - 2),
+    y: y + 1 + Math.max(0, inputLayout.cursorLine - inputStart),
   };
 
   // キーバー
@@ -483,9 +500,8 @@ export function drawConversation(screen: Screen, s: ConversationViewState): void
     screen.height - 1,
     screen.width - 2,
     s.completion
-      ? '[Tab/↑↓]候補を選ぶ  [Enter]決定  [Esc]やめる'
-      : '[Enter]送信 [Ctrl+J]改行 [Ctrl+U/D]遡る(Shift で 5 行) [Alt+e]控え [Alt+p]控えを送る [Esc]戻る',
+      ? '[Tab/Shift+Tab]候補を選ぶ  [Enter]決定  [Esc]やめる'
+      : '[ドラッグ]コピー [↑/↓]入力内移動/送信履歴 [ホイール]会話履歴 [Enter]送信 [Ctrl+J]改行 [Alt+e]控え [Alt+p]控えを送る [Esc]戻る',
     { fg: theme.textDim, bg: theme.bg },
   );
 }
-

@@ -26,6 +26,13 @@ function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
+function threadConflictMessage(stderr: string): string | null {
+  if (!/thread-store conflict[\s\S]*already has an active writer/i.test(stderr)) return null;
+  const id = /thread\s+([0-9a-f-]{16,})/i.exec(stderr)?.[1];
+  const thread = id ? `（${id.slice(0, 8)}…）` : '';
+  return `同じ Codex 会話${thread}が別の画面またはプロセスで開かれています。そちらを閉じてから再実行するか、[N] で新しいセッションへ引き継いでください。`;
+}
+
 export interface CodexParserOptions {
   /**
    * 前ターンまでの累計トークン。turn.completed.usage はスレッド生涯の累計なので、
@@ -97,7 +104,11 @@ export class CodexParser {
       const reason = exit.signal
         ? `シグナル ${exit.signal} で終了しました`
         : `終了コード ${exit.code} で終了しました`;
-      events.push({ t: 'error', message: tail ? `${reason}\n${tail}` : reason });
+      const conflict = threadConflictMessage(exit.stderr);
+      events.push({
+        t: 'error',
+        message: conflict ? `${reason}\n${conflict}` : tail ? `${reason}\n${tail}` : reason,
+      });
       events.push({ t: 'turn_end', ok: false, result: reason });
     }
     return events;
@@ -105,6 +116,15 @@ export class CodexParser {
 
   #handle(o: AnyRecord): AgentEvent[] {
     switch (o.type) {
+      case 'dashboard.event': {
+        // ローカル App Server worker が正規化したイベント。従来の exec ログも読める。
+        const event = o.event as AgentEvent;
+        if (event?.t === 'turn_end') this.#sawTurnEnd = true;
+        if (event?.t === 'error') {
+          event.message = threadConflictMessage(event.message) ?? event.message;
+        }
+        return event?.t ? [event] : [];
+      }
       case 'thread.started':
         return [{ t: 'session_started', sessionId: str(o.thread_id), model: this.#model }];
 

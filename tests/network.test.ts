@@ -70,6 +70,14 @@ describe('指紋', () => {
     assert.equal(snapshotOf(() => ({})).online, false);
   });
 
+  test('インターフェースを列挙できなくても起動を妨げない', () => {
+    const snapshot = snapshotOf(() => {
+      throw new Error('interface enumeration denied');
+    });
+    assert.equal(snapshot.online, true);
+    assert.equal(snapshot.fingerprint, 'unavailable');
+  });
+
   test('列挙順が変わっても同じ指紋になる', () => {
     const a = snapshotOf(() => ({ eth0: [iface('10.0.0.1')], wlan0: [iface('192.168.1.10')] }));
     const b = snapshotOf(() => ({ wlan0: [iface('192.168.1.10')], eth0: [iface('10.0.0.1')] }));

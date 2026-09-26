@@ -18,6 +18,8 @@ export type KeyName =
   | 'backspace' | 'delete'
   | 'home' | 'end' | 'pageup' | 'pagedown'
   | 'wheelup' | 'wheeldown'
+  | 'mousedown' | 'mousedrag' | 'mouseup'
+  | 'f2'
   | 'unknown';
 
 export interface Key {
@@ -28,6 +30,9 @@ export interface Key {
   alt: boolean;
   shift: boolean;
   raw: string;
+  /** SGRのマウス座標。画面セル基準、0始まり。 */
+  x?: number;
+  y?: number;
 }
 
 function key(name: KeyName, opts: Partial<Key> = {}): Key {
@@ -42,6 +47,7 @@ const CSI_NAMES: Record<string, KeyName> = {
   H: 'home',
   F: 'end',
   Z: 'backtab',
+  Q: 'f2',
 };
 
 const TILDE_NAMES: Record<string, KeyName> = {
@@ -52,6 +58,7 @@ const TILDE_NAMES: Record<string, KeyName> = {
   '6': 'pagedown',
   '7': 'home',
   '8': 'end',
+  '12': 'f2',
 };
 
 export const PASTE_START = '\x1b[200~';
@@ -83,6 +90,11 @@ export class KeyDecoder {
 
   get hasPending(): boolean {
     return this.#pending !== '' || this.#pasting;
+  }
+
+  /** 貼付けの途中はESC判別タイマーで確定せず、終端マーカーを待つ。 */
+  get isPasting(): boolean {
+    return this.#pasting;
   }
 
   write(chunk: Buffer | string): Key[] {
@@ -232,12 +244,20 @@ function decodeEscape(chunk: string, start: number, out: Key[]): number {
     const raw = chunk.slice(start, i + 1);
 
     // SGR マウス: ESC [ < <ボタン> ; <桁> ; <行> M（押下）/ m（解放）
-    // ホイールはボタン 64（上）/ 65（下）。それ以外の押下は捨てる。
+    // 左ドラッグはアプリ内の文字選択、ホイールは会話履歴に使う。
     if (params.startsWith('<') && (final === 'M' || final === 'm')) {
-      const button = Number(params.slice(1).split(';')[0] ?? '');
-      if (final === 'M' && button === 64) out.push(key('wheelup', { raw }));
-      else if (final === 'M' && button === 65) out.push(key('wheeldown', { raw }));
-      // クリックやドラッグは使わない。捨てて入力欄に紛れ込ませない。
+      const parts = params.slice(1).split(';').map(Number);
+      const [button, col, row] = parts;
+      if (parts.length !== 3 || !parts.every(Number.isSafeInteger) ||
+          button! < 0 || col! < 1 || row! < 1) return i + 1 - start;
+      const opts = { raw, x: col! - 1, y: row! - 1,
+        shift: (button! & 4) !== 0, alt: (button! & 8) !== 0, ctrl: (button! & 16) !== 0 };
+      const base = button! & ~28;
+      if (final === 'M' && base === 64) out.push(key('wheelup', opts));
+      else if (final === 'M' && base === 65) out.push(key('wheeldown', opts));
+      else if (base === 0) out.push(key(final === 'M' ? 'mousedown' : 'mouseup', opts));
+      else if (final === 'M' && base === 32) out.push(key('mousedrag', opts));
+      // 右・中ボタン等は入力欄に流さない。
       return i + 1 - start;
     }
 

@@ -9,6 +9,7 @@ import { defaultRoot, legacyDefaultRoot } from './core/config.ts';
 import { NodeTerminal } from './tui/terminal.ts';
 import { App } from './tui/app.ts';
 import { DEFAULT_THEME } from './tui/theme.ts';
+import { findExistingSession, readCodexThreadNames } from './core/sessions.ts';
 
 export interface Options {
   cwd: string;
@@ -65,6 +66,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     // 過去の会話を遡れるようにする。1 件あたり指示 + 要約の 2 項目なので、
     // 多めに積んでも ConversationState の上限（2000 件）には遠い。
     loadHistory: (id) => boot.persistence.loadTasks(id, 300),
+    // 取り込んだ会話は CLI 側が原本。複製せず、表示時にセッション ID で読み戻す。
+    loadAgentSession: (kind, id) => findExistingSession(kind, id),
+    loadCodexThreadNames: () => readCodexThreadNames(),
     warnings: boot.warnings,
     history: boot.history,
   });

@@ -13,7 +13,7 @@
     "test:live": "VO_LIVE=1 node --test --test-timeout=900000 'tests/live.test.ts'",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test",
-    "start": "node src/cli.ts",
+    "start": "PATH=/home/mm/.nvm/versions/node/v20.20.2/bin:$PATH /home/mm/.nvm/versions/node/v24.15.0/bin/node src/cli.ts",
     "demo": "node src/tui/demo.ts"
   },
   "devDependencies": {

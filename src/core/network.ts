@@ -49,7 +49,15 @@ export interface Snapshot {
 /** ループバックを除いた実インターフェースから指紋を作る */
 export function snapshotOf(read: ReadInterfaces): Snapshot {
   const parts: string[] = [];
-  for (const [name, list] of Object.entries(read())) {
+  let interfaces: Record<string, IfaceInfo[] | undefined>;
+  try {
+    interfaces = read();
+  } catch {
+    // Some WSL/container sandboxes deny interface enumeration. Monitoring is
+    // optional, so do not make that prevent the dashboard from starting.
+    return { online: true, fingerprint: 'unavailable' };
+  }
+  for (const [name, list] of Object.entries(interfaces)) {
     for (const i of list ?? []) {
       if (i.internal) continue;
       parts.push(`${name}:${i.family}:${i.address}:${i.mac}`);

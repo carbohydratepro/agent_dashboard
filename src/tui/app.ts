@@ -6,13 +6,14 @@
  */
 
 import { Screen } from './screen.ts';
+import { ScreenSelection } from './selection.ts';
 import type { Terminal } from './terminal.ts';
 import type { Key } from './input.ts';
 import { isPrintable } from './input.ts';
 import type { Theme } from './theme.ts';
 import { DEFAULT_THEME, STATE_LABEL_JA } from './theme.ts';
 import { drawMainScreen, sessionAtRow } from './render.ts';
-import { CURSOR_HIDE, CURSOR_SHOW, moveTo } from './ansi.ts';
+import { CURSOR_HIDE, CURSOR_SHOW, MOUSE_OFF, MOUSE_ON, moveTo } from './ansi.ts';
 import { recentTurns } from './views/detail.ts';
 import { LOCAL_COMMANDS, changeModelText, parseCommand, runLocalCommand } from '../core/local-commands.ts';
 import { modelChoicesFor, readCodexModelInfo } from '../core/models.ts';
@@ -25,15 +26,15 @@ import { drawPanel, panelMetrics } from './views/panel.ts';
 import type { PanelLine } from './views/panel.ts';
 import { helpLines } from './views/help.ts';
 import { LogBuffer, describeEvent, logLines } from './views/log.ts';
-import { TextInput } from './widgets/textinput.ts';
+import { layoutTextInput, TextInput } from './widgets/textinput.ts';
 import { drawBox, fillRect, textCentered, textClipped, textRight, wrapText } from './paint.ts';
 import { cursorPosition, dropWidth, padEnd, scrollOffsetFor } from './width.ts';
 import { ROLE_LABEL, ROLES } from '../core/naming.ts';
-import { listExistingSessions, readSessionTranscript } from '../core/sessions.ts';
-import type { ExistingSession } from '../core/sessions.ts';
+import { analyzeSessionLog, listExistingSessions, readSessionTranscript } from '../core/sessions.ts';
+import type { ExistingSession, SessionAnalysis } from '../core/sessions.ts';
 import { drawImport, listHeight } from './views/import.ts';
 import type { ImportPreview } from './views/import.ts';
-import { sessionMetrics, createHistory, isRateLimited, currentPeriod } from '../core/analytics.ts';
+import { createHistory, isRateLimited, currentPeriod } from '../core/analytics.ts';
 import type { History } from '../core/analytics.ts';
 import { drawGauge } from './paint.ts';
 import { usageLines } from './views/usage.ts';
@@ -57,6 +58,13 @@ import {
 import { applyCompletion, commandPrefix, completionFor, moveSelection } from './completion.ts';
 import type { CompletionState } from './completion.ts';
 import { drawApproval } from './views/approval.ts';
+import {
+  displayActiveMs,
+  displayStartedAt,
+  displayStats,
+  tokensPerTask,
+  utilization,
+} from '../core/stats.ts';
 
 export type ScreenId =
   | 'main'
@@ -122,6 +130,10 @@ export interface AppDeps {
   bell?: boolean;
   /** 保存済みのタスク履歴。復元したセッションの会話を組み立て直すのに使う（SPEC §14） */
   loadHistory?: (sessionId: string) => Task[];
+  /** CLI 側の会話ログ。取り込んだセッションの全履歴を再起動後も復元する。 */
+  loadAgentSession?: (kind: AgentKind, sessionId: string) => ExistingSession | null;
+  /** Codex 自身が生成した会話タイトル。 */
+  loadCodexThreadNames?: () => ReadonlyMap<string, string>;
   /** 起動時の警告。バナーに出す */
   warnings?: string[];
   /** 月次会計。無ければその場で作る */
@@ -155,16 +167,32 @@ export class App {
   #recovery: RecoveryCoordinator | undefined;
   #defaultCwd: string;
   #loadHistory: ((sessionId: string) => Task[]) | undefined;
+  #loadAgentSession: ((kind: AgentKind, sessionId: string) => ExistingSession | null) | undefined;
+  #loadCodexThreadNames: (() => ReadonlyMap<string, string>) | undefined;
   #history: History;
   #monthlyBudget: number;
   #availableKinds: AgentKind[];
   #usage: UsageMonitor | undefined;
   /** ベルの連続抑制（SPEC §15.7）。3 秒以内は 1 回にまとめる。 */
   #lastBellAt = 0;
+  /** false の間は端末自身にドラッグ選択を任せる（Alt+C で切り替え）。 */
+  #mouseTracking = true;
+  #selection: ScreenSelection | null = null;
+  #copyPending = false;
 
   #scroll = 0;
   /** セッション履歴で選んでいるセッション */
   #archiveIndex = 0;
+  /** 統計画面のターン別グラフで選んでいるセッション。 */
+  #statsSessionIndex = 0;
+  /** CLI ログ解析結果。ターン別グラフは永続化せず、起動時に再構築する。 */
+  #analyses = new Map<string, SessionAnalysis>();
+  #analysisSources = new Map<string, ExistingSession>();
+  #analysisQueue: string[] = [];
+  #analysisQueued = new Set<string>();
+  #analysisRunning = false;
+  /** stop 後に遅れて終わった解析結果を反映しないための世代番号。 */
+  #analysisGeneration = 0;
   #logFilter: string | null = null;
   #confirm: ConfirmState | null = null;
   /** editing が null なら新規、あれば その控えの書き換え */
@@ -213,6 +241,8 @@ export class App {
     this.#recovery = deps.recovery;
     this.#defaultCwd = deps.defaultCwd ?? process.cwd();
     this.#loadHistory = deps.loadHistory;
+    this.#loadAgentSession = deps.loadAgentSession;
+    this.#loadCodexThreadNames = deps.loadCodexThreadNames;
     this.#history = deps.history ?? createHistory(this.#now());
     this.#monthlyBudget = deps.monthlyBudget ?? 20_000;
     this.#availableKinds = deps.availableKinds ?? ['claude', 'codex'];
@@ -239,10 +269,23 @@ export class App {
 
   start(): void {
     this.running = true;
+    // stop → start で同じ App を再利用しても、enter() が有効にする状態と合わせる。
+    this.#mouseTracking = true;
+    this.#selection = null;
+    this.#refreshCodexTitles();
+    for (const session of this.store.dashboard.sessions) {
+      // 保存済みの全期間値があれば一覧はすぐ描ける。ターン内訳は統計を開いた時に読む。
+      // timedTurns がない保存データだけを再解析する。所要時間を取得できない
+      // セッション（timedTurns: 0）を起動のたびに読み直さない。
+      if (!session.lifetime || session.lifetime.timedTurns === undefined) {
+        this.#queueSessionAnalysis(session.id);
+      }
+    }
     this.terminal.enter();
     this.#unsubscribers.push(this.terminal.onKey((k) => this.handleKey(k)));
     this.#unsubscribers.push(
       this.terminal.onResize(() => {
+        this.#selection = null;
         this.screen.resize(this.terminal.columns, this.terminal.rows);
         this.render();
       }),
@@ -256,6 +299,10 @@ export class App {
 
   stop(): void {
     this.running = false;
+    this.#selection = null;
+    this.#analysisGeneration += 1;
+    this.#analysisQueue = [];
+    this.#analysisQueued.clear();
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
     for (const un of this.#unsubscribers) un();
@@ -270,6 +317,10 @@ export class App {
 
   /** アニメーションの 1 コマ。タイマーから呼ばれる。 */
   tick(): void {
+    // 端末で文字をドラッグ選択している間に1文字でも再描画すると、選択範囲が
+    // Windows Terminal側で解除される。コピー選択モード中は状態だけ蓄え、
+    // Alt+Cで戻した時にまとめて描き直す。
+    if (!this.#mouseTracking || this.#selection) return;
     // 負荷は 2 秒に 1 回でいい。毎フレーム取ると自分の CPU を食う。
     const now = this.#now();
     if (this.screenId === 'main' && now - this.#resourcesAt >= 2_000) {
@@ -304,12 +355,29 @@ export class App {
   // 描画
   // -------------------------------------------------------------------------
 
-  render(): void {
+  render(force = false): void {
+    // リサイズや直接呼出しでも端末のドラッグ範囲を消さない。
+    if (this.#selection || (!this.#mouseTracking && !force)) {
+      this.#dirty = true;
+      return;
+    }
     this.#dirty = false;
     if (this.screen.width !== this.terminal.columns || this.screen.height !== this.terminal.rows) {
       this.screen.resize(this.terminal.columns, this.terminal.rows);
     }
     this.#draw();
+
+    if (!this.#mouseTracking) {
+      // 会話・詳細・ログなど、どの画面でも操作を確認できる固定フッター。
+      const y = this.screen.height - 1;
+      for (let x = 0; x < this.screen.width; x += 1) {
+        this.screen.set(x, y, ' ', { bg: this.theme.selectionBg });
+      }
+      this.screen.text(1, y, 'コピー: ドラッグ → Ctrl+Shift+C   [F2 / Esc]戻る（表示停止中）', {
+        fg: this.theme.text, bg: this.theme.selectionBg,
+      });
+      this.screen.cursor = null;
+    }
 
     // カーソルは差分描画のあとに置く。順番を逆にすると、
     // 描画の書き出しでカーソルが動いてしまう。
@@ -452,7 +520,7 @@ export class App {
           lines: this.#statsLines(),
           scroll: this.#scroll,
           theme,
-          footer: '[Esc] 戻る',
+          footer: '[←→] セッション切替  [↑↓/PgUp/PgDn] スクロール  [Esc] 戻る',
         });
         return;
 
@@ -536,6 +604,77 @@ export class App {
     return this.#codexDefaults;
   }
 
+  /** Codex の索引から生成タイトルを同期する。起動時と Codex のターン完了時だけ読む。 */
+  #refreshCodexTitles(onlySessionId?: string): void {
+    if (!this.#loadCodexThreadNames) return;
+    let names: ReadonlyMap<string, string>;
+    try {
+      names = this.#loadCodexThreadNames();
+    } catch {
+      return;
+    }
+    for (const session of this.store.dashboard.sessions) {
+      if (session.kind !== 'codex' || !session.agentSessionId) continue;
+      if (onlySessionId && session.id !== onlySessionId) continue;
+      const title = names.get(session.agentSessionId);
+      if (title) this.manager.setConversationTitle(session.id, title);
+    }
+  }
+
+  /**
+   * ログはセッションごとに直列で読む。複数の巨大 JSONL を同時に読むと、
+   * SSD とメモリを余計に使い、入力の応答も悪くなるため。
+   */
+  #queueSessionAnalysis(sessionId: string, source?: ExistingSession): void {
+    const session = this.store.find(sessionId);
+    if (!session?.agentSessionId) return;
+    if (source) this.#analysisSources.set(sessionId, source);
+    if (!this.#loadAgentSession && !source) return;
+    if (!this.#analysisQueued.has(sessionId)) {
+      this.#analysisQueued.add(sessionId);
+      this.#analysisQueue.push(sessionId);
+    }
+    if (!this.#analysisRunning) void this.#drainAnalysisQueue(this.#analysisGeneration);
+  }
+
+  async #drainAnalysisQueue(generation: number): Promise<void> {
+    if (this.#analysisRunning) return;
+    this.#analysisRunning = true;
+    try {
+      while (this.running && generation === this.#analysisGeneration) {
+        const sessionId = this.#analysisQueue.shift();
+        if (!sessionId) break;
+        this.#analysisQueued.delete(sessionId);
+        const session = this.store.find(sessionId);
+        if (!session?.agentSessionId) continue;
+        try {
+          const source =
+            this.#analysisSources.get(sessionId) ??
+            this.#loadAgentSession?.(session.kind, session.agentSessionId) ??
+            null;
+          if (!source) continue;
+          const analysis = await analyzeSessionLog(source);
+          analysis.lifetime.updatedAt = Math.max(analysis.lifetime.updatedAt, source.updatedAt);
+          if (!this.running || generation !== this.#analysisGeneration || !this.store.find(sessionId)) {
+            continue;
+          }
+          this.#analyses.set(sessionId, analysis);
+          this.manager.setLifetime(sessionId, analysis.lifetime);
+          this.#markDirty();
+        } catch {
+          // 古い・書き込み途中のログが読めなくても、従来の管理期間値で表示を続ける。
+        }
+        // 1 セッションごとに描画・キー入力へ制御を返す。
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    } finally {
+      this.#analysisRunning = false;
+      if (this.running && this.#analysisQueue.length > 0) {
+        void this.#drainAnalysisQueue(this.#analysisGeneration);
+      }
+    }
+  }
+
   #turnsForSelected(): RecentTurn[] {
     const session = this.selectedSession;
     if (!session) return [];
@@ -548,16 +687,40 @@ export class App {
       conv = new ConversationState();
       this.#conversations.set(sessionId, conv);
 
-      // 前回までの履歴を読み戻す
-      for (const task of this.#loadHistory?.(sessionId) ?? []) {
-        conv.pushUser(task.prompt);
-        if (task.summary) conv.applyEvent({ t: 'text', delta: task.summary });
-        if (task.status === 'interrupted') conv.pushSystem('ネットワーク切替により中断');
-        if (task.status === 'cancelled') conv.pushSystem('中断しました');
-      }
       const session = this.store.find(sessionId);
-      if (session?.currentTask && session.currentTask.events.length > 0) {
-        conv.seedFromTask(session.currentTask);
+      let restoredFromAgent = false;
+      if (session?.agentSessionId && this.#loadAgentSession) {
+        try {
+          const source = this.#loadAgentSession(session.kind, session.agentSessionId);
+          if (source) {
+            if (!session.lifetime || source.updatedAt > session.lifetime.updatedAt) {
+              this.#queueSessionAnalysis(session.id, source);
+            }
+            const transcript = readSessionTranscript(source, { maxItems: 1_000 });
+            if (transcript.items.length > 0) {
+              conv.seedFromTranscript(transcript.items, transcript.truncated);
+              restoredFromAgent = true;
+            }
+            if (source.title && source.title !== '（内容不明）') {
+              this.manager.setConversationTitle(session.id, source.title);
+            }
+          }
+        } catch {
+          // CLI ログが読めなくても、ダッシュボード自身の履歴へフォールバックする。
+        }
+      }
+
+      if (!restoredFromAgent) {
+        // 新規セッションや CLI ログが無い場合は、ダッシュボード側の履歴を読み戻す。
+        for (const task of this.#loadHistory?.(sessionId) ?? []) {
+          conv.pushUser(task.prompt);
+          if (task.summary) conv.applyEvent({ t: 'text', delta: task.summary });
+          if (task.status === 'interrupted') conv.pushSystem('ネットワーク切替により中断');
+          if (task.status === 'cancelled') conv.pushSystem('中断しました');
+        }
+        if (session?.currentTask && session.currentTask.events.length > 0) {
+          conv.seedFromTask(session.currentTask);
+        }
       }
     }
     return conv;
@@ -600,7 +763,111 @@ export class App {
   // キー
   // -------------------------------------------------------------------------
 
+  #renderSelection(): void {
+    const selection = this.#selection;
+    if (!selection) return;
+    selection.draw(this.screen, this.theme.selectionBg, this.theme.text);
+    const y = this.screen.height - 1;
+    for (let x = 0; x < this.screen.width; x += 1) {
+      this.screen.set(x, y, ' ', { bg: this.theme.selectionBg });
+    }
+    this.screen.text(1, y, `${selection.status}  [Esc]解除 / キー・ホイールで再開`, {
+      fg: this.theme.text, bg: this.theme.selectionBg,
+    });
+    this.terminal.write(this.screen.render() + CURSOR_HIDE);
+  }
+
+  async #copySelection(selection: ScreenSelection): Promise<void> {
+    const text = selection.text();
+    if (!text.trim()) {
+      selection.status = '空白のみのためコピーしませんでした';
+      this.#renderSelection();
+      return;
+    }
+    if (this.#copyPending) {
+      selection.status = 'コピー処理中です。少し待ってCtrl+Cで再試行';
+      this.#renderSelection();
+      return;
+    }
+    this.#copyPending = true;
+    selection.status = 'コピー中…';
+    this.#renderSelection();
+    try {
+      await this.terminal.copyText(text);
+      selection.status = 'コピーを送信しました（貼付けで確認できます）';
+    } catch {
+      selection.status = 'コピー失敗：[F2] → ドラッグ → Ctrl+Shift+C';
+    } finally {
+      this.#copyPending = false;
+      if (this.running && this.#selection === selection) this.#renderSelection();
+    }
+  }
+
   handleKey(k: Key): void {
+    // マウス報告中は通常のドラッグ選択が端末からアプリへ奪われる。
+    // Shift 回避が効かない端末もあるため、どの画面からでも明示的に切り替えられるようにする。
+    if (k.name === 'f2' ||
+        (k.name === 'char' && k.alt && k.ch.toLowerCase() === 'c') ||
+        (!this.#mouseTracking && k.name === 'escape')) {
+      this.#selection = null;
+      this.#mouseTracking = !this.#mouseTracking;
+      this.terminal.write(this.#mouseTracking ? MOUSE_ON : MOUSE_OFF);
+      if (this.#mouseTracking) {
+        this.#notify('マウスホイールを有効にしました');
+      } else {
+        this.#setBanner(
+          'コピー選択モード：ドラッグ → Ctrl+Shift+C（F2 / Esc で戻る）',
+          this.theme.gauge.good,
+          10_000,
+        );
+      }
+      this.render(true);
+      return;
+    }
+
+    // Ctrl+Shift+C が Ctrl+C として届いても、タスクを中断しない。
+    // 貼付け・ホイール・その他キーもコピー中の画面と入力を変えない。
+    if (!this.#mouseTracking) return;
+
+    if (k.name === 'mousedown' || k.name === 'mousedrag' || k.name === 'mouseup') {
+      if (k.x === undefined || k.y === undefined) return;
+      if (k.name === 'mousedown') {
+        if (this.#selection) {
+          this.#selection = null;
+          this.render();
+        }
+        this.#selection = new ScreenSelection(this.screen, k.x, k.y);
+      } else if (this.#selection?.dragging) {
+        const selection = this.#selection;
+        selection.end = selection.index(k.x, k.y);
+        if (k.name === 'mouseup') {
+          selection.dragging = false;
+          if (selection.moved) {
+            void this.#copySelection(selection);
+          } else {
+            this.#selection = null; // 単なるクリックではコピーしない。
+            this.render();
+          }
+        } else {
+          this.#renderSelection();
+        }
+      }
+      return;
+    }
+
+    if (this.#selection) {
+      if (k.name === 'char' && k.ctrl && k.ch.toLowerCase() === 'c') {
+        void this.#copySelection(this.#selection);
+        return; // コピー操作をタスク中断や入力消去へ流さない。
+      }
+      this.#selection = null;
+      if (k.name === 'escape') {
+        this.render();
+        return;
+      }
+      // 入力・スクロールはそのまま実行し、最新の会話へ戻す。
+    }
+
     // ホイールはどの画面でも「いま見えているものを送る」。
     // 画面ごとに送り先が違うので、キーの振り分けより先にここで捌く。
     if (k.name === 'wheelup' || k.name === 'wheeldown') {
@@ -653,6 +920,21 @@ export class App {
       this.#openScreen('main');
       return;
     }
+    if (
+      this.screenId === 'stats' &&
+      (k.name === 'left' || k.name === 'right' ||
+        (k.name === 'char' && (k.ch === 'h' || k.ch === 'l')))
+    ) {
+      const count = this.store.active().length;
+      if (count > 0) {
+        const direction = k.name === 'left' || (k.name === 'char' && k.ch === 'h') ? -1 : 1;
+        this.#statsSessionIndex = (this.#statsSessionIndex + direction + count) % count;
+        this.#scroll = 0;
+        const selected = this.store.active()[this.#statsSessionIndex];
+        if (selected && !this.#analyses.has(selected.id)) this.#queueSessionAnalysis(selected.id);
+      }
+      return;
+    }
     if (k.name === 'pagedown' || (k.ctrl && k.ch === 'd')) {
       this.#scroll = Math.min(maxScroll, this.#scroll + Math.floor(visibleRows / 2));
       return;
@@ -695,6 +977,7 @@ export class App {
 
     if (e.t === 'session_added') {
       this.#conversationFor(e.session.id);
+      this.#queueSessionAnalysis(e.session.id);
       return;
     }
 
@@ -713,6 +996,8 @@ export class App {
       // 使ったぶんが反映されるので取り直す（最短間隔は UsageMonitor 側で守る）
       const kind = this.store.find(e.sessionId)?.kind;
       if (kind) void this.#usage?.refresh(kind);
+      if (kind === 'codex') this.#refreshCodexTitles(e.sessionId);
+      this.#queueSessionAnalysis(e.sessionId);
       const conv = this.#conversations.get(e.sessionId);
       if (conv) {
         if (e.task.status === 'cancelled') conv.pushSystem('中断しました');
@@ -942,7 +1227,7 @@ export class App {
     }
     const theme = this.theme;
     const w = Math.min(80, this.screen.width - 8);
-    const h = 12;
+    const h = Math.max(8, Math.min(18, this.screen.height - 4));
     const x = Math.floor((this.screen.width - w) / 2);
     const y = Math.floor((this.screen.height - h) / 2);
 
@@ -957,21 +1242,31 @@ export class App {
       bg: theme.panelBg,
     });
 
-    const lines = state.input.value.split('\n');
-    const available = w - 5;
-    const pos = cursorPosition(state.input.value, state.input.cursor);
-    const offset = scrollOffsetFor(pos.column, available);
+    const visibleRows = h - 5;
+    const layout = layoutTextInput(state.input.value, state.input.cursor, w - 4);
+    const start = Math.max(
+      0,
+      Math.min(layout.cursorLine - visibleRows + 1, layout.lines.length - visibleRows),
+    );
+    const end = Math.min(layout.lines.length, start + visibleRows);
+    if (layout.lines.length > visibleRows) {
+      textRight(this.screen, x + 2, y + 2, w - 4, `入力 ${start + 1}–${end}/${layout.lines.length}`, {
+        fg: theme.textDim,
+        bg: theme.panelBg,
+      });
+    }
 
-    for (let i = 0; i < Math.min(lines.length, h - 5); i += 1) {
-      textClipped(this.screen, x + 2, y + 3 + i, w - 4, dropWidth(lines[i]!, offset), {
+    for (let i = 0; i < visibleRows; i += 1) {
+      const line = layout.lines[start + i];
+      if (line === undefined) break;
+      textClipped(this.screen, x + 2, y + 3 + i, w - 4, line, {
         fg: theme.text,
         bg: theme.panelBg,
       });
     }
-    if (offset > 0) this.screen.set(x + 1, y + 3, '‹', { fg: theme.textDim, bg: theme.panelBg });
     this.screen.cursor = {
-      x: Math.min(x + 2 + pos.column - offset, x + w - 2),
-      y: y + 3 + Math.min(pos.line, h - 6),
+      x: Math.min(x + 2 + layout.cursorColumn, x + w - 2),
+      y: y + 3 + Math.max(0, layout.cursorLine - start),
     };
 
     textCentered(this.screen, x, y + h - 2, w, '[Enter] 保存    [Ctrl+J] 改行    [Esc] 取消', {
@@ -1080,7 +1375,7 @@ export class App {
 
   #archiveSessions(): Session[] {
     return [...this.store.dashboard.sessions].sort(
-      (a, b) => b.stats.tasksCompleted - a.stats.tasksCompleted,
+      (a, b) => displayStats(b).tasksCompleted - displayStats(a).tasksCompleted,
     );
   }
 
@@ -1092,7 +1387,7 @@ export class App {
     const now = this.#now();
 
     for (const session of all) {
-      const st = session.stats;
+      const st = displayStats(session);
       const isSelected = session === selected;
       lines.push({
         text: `${isSelected ? '▶ ' : '  '}${session.name}  ${session.kind}  ${ROLE_LABEL[session.role]}  ${session.archived ? '（アーカイブ）' : STATE_LABEL_JA[session.state]}`,
@@ -1105,7 +1400,7 @@ export class App {
         indent: 2,
       });
       lines.push({
-        text: `経過 ${formatDuration(now - session.uptime.startedAt)}  実働 ${formatDuration(session.uptime.activeMs)}  トークン ${formatTokens(st.totalTokensIn + st.totalTokensOut)}  ${session.workspace.requestedCwd}`,
+        text: `経過 ${formatDuration(now - displayStartedAt(session))}  実働 ${formatDuration(displayActiveMs(session))}  トークン ${formatTokens(st.totalTokensIn + st.totalTokensOut)}  ${session.workspace.requestedCwd}`,
         color: theme.textDim,
         indent: 2,
       });
@@ -1131,19 +1426,66 @@ export class App {
         indent: 1,
       },
       { text: '' },
-      { text: 'セッションごと', color: theme.accent, bold: true },
+      { text: 'セッションごと（CLI セッション開始から）', color: theme.accent, bold: true },
     ];
 
     for (const session of active) {
-      const m = sessionMetrics(session, this.#history, now);
+      const st = displayStats(session);
+      const elapsed = Math.max(1, now - displayStartedAt(session));
+      const activeMs = displayActiveMs(session);
+      const perTask = tokensPerTask(st);
       lines.push({
-        text: `${padEnd(m.name, 14)} 完了 ${String(m.tasksCompleted).padStart(3)}   稼働率 ${String(Math.round(m.utilization * 100)).padStart(3)}%   トークン ${formatTokens(m.totalTokens)}   1 タスク ${m.tokensPerTask ?? '—'}`,
+        text: `${padEnd(session.name, 14)} 完了 ${String(st.tasksCompleted).padStart(3)}   稼働率 ${String(Math.round(utilization(activeMs, elapsed) * 100)).padStart(3)}%   トークン ${formatTokens(st.totalTokensIn + st.totalTokensOut)}   1 タスク ${perTask ?? '—'}`,
         color: theme.text,
         indent: 1,
       });
     }
     if (active.length === 0) {
       lines.push({ text: 'まだセッションがありません。', color: theme.textDim, indent: 1 });
+    }
+
+    if (active.length > 0) {
+      this.#statsSessionIndex = Math.max(0, Math.min(this.#statsSessionIndex, active.length - 1));
+      const selected = active[this.#statsSessionIndex]!;
+      const analysis = this.#analyses.get(selected.id);
+      lines.push({ text: '' });
+      lines.push({
+        text: `会話ごとの消費トークン — ${selected.name}（${this.#statsSessionIndex + 1}/${active.length}）`,
+        color: theme.accent,
+        bold: true,
+      });
+      if (!analysis) {
+        lines.push({ text: 'CLI ログを解析しています…', color: theme.textDim, indent: 1 });
+      } else if (analysis.turns.length === 0) {
+        lines.push({ text: 'トークン情報のある会話はありません。', color: theme.textDim, indent: 1 });
+      } else {
+        const max = Math.max(1, ...analysis.turns.map((turn) => turn.tokens.totalTokens));
+        const barWidth = Math.max(8, Math.min(24, this.screen.width - 62));
+        for (const turn of analysis.turns) {
+          const filled = turn.tokens.totalTokens > 0
+            ? Math.max(1, Math.round((turn.tokens.totalTokens / max) * barWidth))
+            : 0;
+          const bar = this.#ascii
+            ? `${'#'.repeat(filled)}${'-'.repeat(barWidth - filled)}`
+            : `${'█'.repeat(filled)}${'░'.repeat(barWidth - filled)}`;
+          lines.push({
+            text: `#${String(turn.index).padStart(2, '0')} ${bar} ${formatTokens(turn.tokens.totalTokens).padStart(7)}  ${turn.complete ? '' : '（進行中）'}${turn.label}`,
+            color: turn.complete ? theme.text : theme.gauge.warn,
+            indent: 1,
+          });
+          const cache = turn.tokens.cachedInputTokens > 0
+            ? ` / cache ${turn.tokens.cachedInputTokens.toLocaleString('en-US')}`
+            : '';
+          const reasoning = turn.tokens.reasoningTokens > 0
+            ? ` / reasoning ${turn.tokens.reasoningTokens.toLocaleString('en-US')}`
+            : '';
+          lines.push({
+            text: `in ${turn.tokens.inputTokens.toLocaleString('en-US')} / out ${turn.tokens.outputTokens.toLocaleString('en-US')}${cache}${reasoning} / ${formatDuration(turn.durationMs)}`,
+            color: theme.textDim,
+            indent: 5,
+          });
+        }
+      }
     }
 
     lines.push({ text: '' });
@@ -1200,6 +1542,7 @@ export class App {
       { text: `逼迫とみなす比率        ${Math.round(c.contextRestThreshold * 100)}%`, color: theme.text },
       { text: `常に許可するツール      ${c.alwaysAllowedTools.join(', ') || '（なし）'}`, color: theme.text },
       { text: `既定の作業ディレクトリ  ${c.defaultCwd}`, color: theme.text },
+      { text: `同じディレクトリの実行  ${c.serializeByCwd ? '順番待ち' : '並行実行'}`, color: theme.text },
       { text: '' },
       { text: 'この画面は現在の値を確認するためのものです。', color: theme.textDim },
       { text: '変更は設定ファイルを編集して再起動してください。', color: theme.textDim },
@@ -1348,6 +1691,14 @@ export class App {
           this.#openScreen('archive');
           return;
         case 's':
+          this.#statsSessionIndex = Math.max(
+            0,
+            this.store.active().findIndex((session) => session.id === this.selectedSession?.id),
+          );
+          {
+            const selected = this.store.active()[this.#statsSessionIndex];
+            if (selected && !this.#analyses.has(selected.id)) this.#queueSessionAnalysis(selected.id);
+          }
           this.#openScreen('stats');
           return;
         case ',':
@@ -1681,7 +2032,7 @@ export class App {
     if (!source) return;
 
     // 一覧に出すぶんより多く読み直す。画面に出す履歴なので長めに。
-    const transcript = readSessionTranscript(source, { maxItems: 400 });
+    const transcript = readSessionTranscript(source, { maxItems: 1_000 });
 
     // 前に担当していたアーカイブ済みが居るなら、新しく作らずそれを戻す。
     // 2 つの記録が同じ会話を持つと、CLI 側が「書き手が既にいる」と言って
@@ -1691,7 +2042,15 @@ export class App {
     );
     if (former) {
       try {
+        if (source.title !== '（内容不明）') {
+          this.manager.setConversationTitle(former.id, source.title);
+        }
+        const conv = new ConversationState();
+        conv.seedFromTranscript(transcript.items, transcript.truncated);
+        conv.pushSystem(`ここから ${former.name} として続行`);
+        this.#conversations.set(former.id, conv);
         const back = this.manager.unarchiveSession(former.id);
+        this.#queueSessionAnalysis(former.id, source);
         this.selectedRow = back.slot;
         this.#importSession = null;
         this.#hire = null;
@@ -1710,13 +2069,16 @@ export class App {
         // 会話は始まった場所に紐づいている。別の場所から再開すると見つからない。
         cwd: source.cwd || this.#defaultCwd,
         agentSessionId: source.sessionId,
+        conversationTitle: source.title === '（内容不明）' ? null : source.title,
         carryOver: transcript.experience,
       });
+      this.#queueSessionAnalysis(session.id, source);
 
       // これまでのやり取りを会話画面に流し込む
-      const conv = this.#conversationFor(session.id);
+      const conv = new ConversationState();
       conv.seedFromTranscript(transcript.items, transcript.truncated);
       conv.pushSystem(`ここから ${session.name} として続行`);
+      this.#conversations.set(session.id, conv);
 
       // 取り込んだぶんは今月の実績ではないので、月初の基準に含めておく
       this.#history.baseline[session.id] = {
@@ -1855,8 +2217,29 @@ export class App {
   }
 
   #send(session: Session, prompt: string): void {
+    if (this.manager.isRunning(session.id)) {
+      // 受付確認までは永続化される控えに保持。失敗時も文章を失わない。
+      const draft = this.manager.addDraft(session.id, prompt);
+      const conv = this.#conversationFor(session.id);
+      conv.pushSystem('実行中の会話へ追加指示を送信中…');
+      void this.manager.steer(session.id, prompt).then(() => {
+        if (draft && session.drafts.some((d) => d.id === draft.id && d.text === prompt.trim())) {
+          this.manager.removeDraft(session.id, draft.id);
+        }
+        conv.pushSystem('追加指示を受け付けました');
+        this.#markDirty();
+      }).catch((err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        conv.pushSystem(`追加指示の受付を確認できませんでした: ${reason}（文章は控えに保存）`);
+        this.#markDirty();
+      });
+      this.#markDirty();
+      return;
+    }
     const run = this.manager.dispatch(session.id, prompt);
     run.catch((err: unknown) => {
+      this.manager.addDraft(session.id, prompt);
+      this.#conversationFor(session.id).pushSystem('送信できなかった文章を控えに保存しました');
       this.#notify(err instanceof Error ? err.message : String(err), this.theme.gauge.critical);
     });
     this.#markDirty();
@@ -1898,6 +2281,11 @@ export class App {
       this.#draft = null;
       const session = this.store.find(state.sessionId);
       this.#openScreen(back === 'drafts' && (session?.drafts.length ?? 0) > 0 ? 'drafts' : 'main');
+      return;
+    }
+    if (k.name === 'up' || k.name === 'down') {
+      const width = Math.min(80, this.screen.width - 8) - 4;
+      state.input.moveVertical(k.name === 'up' ? -1 : 1, width);
       return;
     }
     state.input.handleKey(k);
@@ -2035,17 +2423,17 @@ export class App {
     }
     const conv = this.#conversationFor(session.id);
 
-    // 候補を出している間は、その操作を優先する
+    // 候補は Tab で選ぶ。↑/↓ は入力内を動き、端を越えたら送信履歴へ移る。
     if (this.#completion) {
       if (k.name === 'escape') {
         this.#completion = null;
         return;
       }
-      if (k.name === 'tab' || k.name === 'down') {
+      if (k.name === 'tab') {
         this.#completion = moveSelection(this.#completion, 1);
         return;
       }
-      if (k.name === 'backtab' || k.name === 'up') {
+      if (k.name === 'backtab') {
         this.#completion = moveSelection(this.#completion, -1);
         return;
       }
@@ -2096,12 +2484,16 @@ export class App {
       conv.scrollBy(k.ch === 'u' ? -lines : lines);
       return;
     }
-    if (k.name === 'up' && conv.input.isEmpty) {
-      conv.input.historyPrev();
+    if (k.name === 'up') {
+      if (!conv.input.moveVertical(-1, this.screen.width - 6)) conv.input.historyPrev();
+      this.#completion = null;
+      this.#completionNote = null;
       return;
     }
-    if (k.name === 'down' && conv.input.isEmpty) {
-      conv.input.historyNext();
+    if (k.name === 'down') {
+      if (!conv.input.moveVertical(1, this.screen.width - 6)) conv.input.historyNext();
+      this.#completion = null;
+      this.#completionNote = null;
       return;
     }
     // 入力欄では文字を奪わない。日本語を打っている最中に画面が飛ばないように。

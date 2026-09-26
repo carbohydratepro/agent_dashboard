@@ -340,6 +340,21 @@ describe('CodexParser — 異常系', () => {
     assert.ok(events.some((e) => e.t === 'error' && /unexpected argument/.test(e.message)));
     assert.equal(events.find((e) => e.t === 'turn_end')?.ok, false);
   });
+
+  test('同じスレッドを別画面で開いている競合は、対処方法を日本語で出す', () => {
+    const p = new CodexParser();
+    const events = p.finish({
+      t: 'exit',
+      code: 1,
+      signal: null,
+      stderr: 'failed to initialize thread persistence: thread-store conflict: thread 01a09e76-b131-7591-932d-99f9bbf16913 already has an active writer',
+    });
+    const error = events.find((event) => event.t === 'error');
+    assert.ok(error?.t === 'error');
+    assert.match(error.message, /別の画面またはプロセス/);
+    assert.match(error.message, /01a09e76…/);
+    assert.match(error.message, /\[N\]/);
+  });
 });
 
 // ---------------------------------------------------------------------------

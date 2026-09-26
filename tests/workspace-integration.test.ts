@@ -40,7 +40,7 @@ afterEach(() => {
   if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
 });
 
-function harness() {
+function harness(serializeByCwd = true) {
   const voRoot = join(root, '.agent-dashboard');
   const store = new StateStore(createDashboard());
   const driver = new MockDriver({ kind: 'claude' });
@@ -52,7 +52,7 @@ function harness() {
     drivers: { claude: driver },
     ids: new SeqIdGen(),
     locks,
-    config: { defaultCwd: repo },
+    config: { defaultCwd: repo, serializeByCwd },
   });
   const wm = new WorkspaceManager({ root: voRoot });
 
@@ -128,6 +128,42 @@ describe('同一ディレクトリへの作成', () => {
 // ---------------------------------------------------------------------------
 
 describe('ロックによる直列化（SPEC §9.4）', () => {
+  test('並行設定なら同じ場所の先行ターンが終わる前に両方が実行される', async () => {
+    const h = harness(false);
+    h.driver.setHangAfter(1);
+    h.locks.writeForeignLock(repo, { pid: process.pid, owner: '先行処理', cwd: repo, acquiredAt: Date.now() });
+    const a = h.manager.createSession({ kind: 'claude', cwd: repo });
+    const b = h.manager.createSession({ kind: 'claude', cwd: repo });
+    const runs = [h.manager.dispatch(a.id, 'A'), h.manager.dispatch(b.id, 'B')];
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(h.driver.calls.length, 2, 'cwdのロックがあっても両方のCLIが起動');
+      assert.equal(a.currentTask?.status, 'running');
+      assert.equal(b.currentTask?.status, 'running');
+      assert.ok(h.driver.calls.every((call) => call.cwd === repo));
+    } finally {
+      h.manager.interrupt(a.id, 'user');
+      h.manager.interrupt(b.id, 'user');
+      await Promise.all(runs);
+    }
+  });
+
+  test('並行設定でも同じ会話と同じセッションの二重起動は拒否する', async () => {
+    const h = harness(false);
+    h.driver.setHangAfter(1);
+    const a = h.manager.createSession({ kind: 'claude', cwd: repo, agentSessionId: 'same-thread' });
+    const b = h.manager.createSession({ kind: 'claude', cwd: repo, agentSessionId: 'same-thread' });
+    const run = h.manager.dispatch(a.id, 'A');
+    try {
+      await assert.rejects(h.manager.dispatch(a.id, '二重起動', { force: true }), /実行中/);
+      await assert.rejects(h.manager.dispatch(b.id, '同じ会話の別枠'), /同じ会話/);
+      assert.equal(h.driver.calls.length, 1);
+    } finally {
+      h.manager.interrupt(a.id, 'user');
+      await run;
+    }
+  });
+
   test('同居しているセッションの指示は順番に実行される', async () => {
     const h = harness();
     const timeline: string[] = [];

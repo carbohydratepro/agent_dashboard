@@ -1,6 +1,6 @@
 /** セッションの集計。数字はすべて実測で、演出用の指標は持たない。 */
 
-import type { SessionStats } from './types.ts';
+import type { Session, SessionStats } from './types.ts';
 
 export function createStats(): SessionStats {
   return {
@@ -28,4 +28,32 @@ export function utilization(activeMs: number, elapsedMs: number): number {
 export function tokensPerTask(stats: SessionStats): number | null {
   if (stats.tasksCompleted === 0) return null;
   return Math.round((stats.totalTokensIn + stats.totalTokensOut) / stats.tasksCompleted);
+}
+
+/** 一覧・履歴用。全期間ログがあればそれを、無ければ従来の管理期間値を返す。 */
+export function displayStats(session: Session): SessionStats {
+  const lifetime = session.lifetime;
+  if (!lifetime) return session.stats;
+  return {
+    ...session.stats,
+    tasksCompleted: lifetime.tasksCompleted,
+    filesEdited: lifetime.filesEdited,
+    commandsRun: lifetime.commandsRun,
+    totalTokensIn: lifetime.hasTokenUsage
+      ? lifetime.tokens.inputTokens
+      : session.stats.totalTokensIn,
+    totalTokensOut: lifetime.hasTokenUsage
+      ? lifetime.tokens.outputTokens
+      : session.stats.totalTokensOut,
+  };
+}
+
+export function displayStartedAt(session: Session): number {
+  return session.lifetime?.startedAt ?? session.uptime.startedAt;
+}
+
+export function displayActiveMs(session: Session): number {
+  return session.lifetime?.hasTiming
+    ? session.lifetime.activeMs
+    : session.uptime.activeMs;
 }

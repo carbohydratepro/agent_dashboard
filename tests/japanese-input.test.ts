@@ -5,10 +5,13 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 
 import { KeyDecoder, PASTE_END, PASTE_START, decodeKeys, isPrintable } from '../src/tui/input.ts';
 import { App } from '../src/tui/app.ts';
-import { FakeTerminal } from '../src/tui/terminal.ts';
+import { FakeTerminal, NodeTerminal } from '../src/tui/terminal.ts';
+import { TextInput, layoutTextInput } from '../src/tui/widgets/textinput.ts';
+import type { Key } from '../src/tui/input.ts';
 import { SessionManager } from '../src/core/session-manager.ts';
 import { StateStore, createDashboard } from '../src/core/store.ts';
 import { MockDriver, successfulTurn } from '../src/core/drivers/mock.ts';
@@ -114,6 +117,42 @@ describe('エスケープ列の分割', () => {
 });
 
 describe('ブラケットペースト（IME の確定文字列）', () => {
+  for (const [label, newline] of [['CR', '\r'], ['CRLF', '\r\n'], ['LF', '\n']] as const) {
+    test(`${label}の貼付けで改行・空行・字下げを保持する`, () => {
+      const input = new TextInput();
+      const body = ['一行目', '', '  二行目', ''].join(newline);
+      for (const k of decodeKeys(`${PASTE_START}${body}${PASTE_END}`)) input.handleKey(k);
+      assert.equal(input.value, '一行目\n\n  二行目\n');
+      assert.equal(input.cursor, input.value.length);
+      assert.deepEqual(layoutTextInput(input.value, input.cursor, 80).lines, ['一行目', '', '  二行目', '']);
+    });
+  }
+
+  test('実端末の25msタイマーで分割ペーストを途中確定しない', async () => {
+    const input = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
+    const output = Object.assign(new EventEmitter(), { columns: 80, rows: 24, write() { return true; } });
+    const terminal = new NodeTerminal(input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream);
+    const keys: Key[] = [];
+    terminal.onKey((k) => keys.push(k));
+    terminal.enter();
+    try {
+      input.emit('data', `${PASTE_START}一行目\r`);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      assert.equal(keys.length, 0, '終端までは入力・送信として確定しない');
+      input.emit('data', '\n\r\n  二行目\x1b[20');
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      assert.equal(keys.length, 0, '分割された終端マーカーも待つ');
+      input.emit('data', '1~');
+      assert.equal(keys.length, 1);
+      assert.equal(keys[0]!.name, 'paste');
+      const field = new TextInput();
+      field.handleKey(keys[0]!);
+      assert.equal(field.value, '一行目\n\n  二行目');
+      input.emit('data', '\r');
+      assert.equal(keys.at(-1)!.name, 'enter', '貼付け後のEnterは従来通り送信キー');
+    } finally { terminal.exit(); }
+  });
+
   test('囲まれた中身は 1 つのペーストになる', () => {
     const keys = decodeKeys(`${PASTE_START}こんにちは${PASTE_END}`);
     assert.equal(keys.length, 1);
@@ -187,6 +226,35 @@ describe('入力欄の横スクロール', () => {
 });
 
 describe('画面の中の日本語入力', () => {
+  for (const newline of ['\r', '\r\n', '\n']) {
+    test(`貼付けの改行${JSON.stringify(newline)}を表示・送信まで保持する`, async () => {
+      const h = harness();
+      h.manager.createSession({ kind: 'claude' });
+      try {
+        h.term.feed('\r');
+        h.term.feed(`${PASTE_START}一行目${newline}${newline}  二行目${PASTE_END}`);
+        const rows = h.view().split('\n');
+        assert.equal(rows.findIndex((row) => row.includes('二行目')) - rows.findIndex((row) => row.includes('一行目')), 2);
+        assert.equal(h.claude.calls.length, 0, '貼付けだけでは送信しない');
+        h.term.feed('\r');
+        await settle();
+        assert.equal(h.claude.calls[0]?.prompt, '一行目\n\n  二行目');
+      } finally { h.app.stop(); }
+    });
+  }
+
+  test('控え欄の途中へのCRLF貼付けでも改行を保存する', () => {
+    const h = harness();
+    const session = h.manager.createSession({ kind: 'claude' });
+    try {
+      h.term.feed('e');
+      h.term.feed('前後\x1b[D');
+      h.term.feed(`${PASTE_START}一行\r\n\r\n二行${PASTE_END}`);
+      h.term.feed('\r');
+      assert.equal(session.drafts[0]?.text, '前一行\n\n二行後');
+    } finally { h.app.stop(); }
+  });
+
   test('日本語を打つと入力欄に出る', async () => {
     const h = harness();
     h.manager.createSession({ kind: 'claude' });
@@ -234,7 +302,7 @@ describe('画面の中の日本語入力', () => {
     h.app.render();
     const text = h.app.screen.toStrings().join('\n');
 
-    assert.ok(text.includes('‹'), '横に流れていることが分かる印が出る');
+    assert.ok(text.split('\n').filter((line) => line.includes('あ')).length > 1, '複数行に折り返す');
     // 未確定文字列は端末の本物のカーソルの位置に出る。
     // 打っている場所に置いていないと、変換中の文字が見えない。
     assert.ok(h.app.screen.cursor, 'カーソルの置き場所が決まっている');
@@ -273,14 +341,20 @@ describe('画面の中の日本語入力', () => {
     const h = harness();
     const emp = h.manager.createSession({ kind: 'claude' });
     h.term.feed('e');
-    h.term.feed('長い下書き'.repeat(30));
+    h.term.feed(`先頭${'長い下書き'.repeat(100)}末尾`);
     h.app.render();
 
-    const text = h.app.screen.toStrings().join('\n');
-    assert.ok(text.includes('‹'));
+    let text = h.app.screen.toStrings().join('\n');
+    assert.ok(text.includes('末尾'), 'カーソルのある末尾が見える');
+    assert.ok(text.includes('入力 '), '表示中の範囲が分かる');
     assert.ok(h.app.screen.cursor, '下書き欄にもカーソルが置かれる');
+    h.term.feed('\x1b[H');
+    h.app.render();
+    text = h.app.screen.toStrings().join('\n');
+    assert.ok(text.includes('先頭'), 'カーソルを戻すと先頭へ表示も追従する');
+    h.term.feed('\x1b[F');
     h.term.feed('\r');
-    assert.equal(emp.drafts[0]!.text, '長い下書き'.repeat(30));
+    assert.equal(emp.drafts[0]!.text, `先頭${'長い下書き'.repeat(100)}末尾`);
   });
 
   test('追加ダイアログのパスにも日本語を入れられる', () => {

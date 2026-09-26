@@ -63,4 +63,6 @@ export interface AgentDriver {
   resume(sessionId: string, opts: TurnOpts): AsyncIterable<AgentEvent>;
   /** ダッシュボードを立ち上げ直したとき、走ったままのものを追いかける */
   attach?(opts: AttachOpts): AsyncIterable<AgentEvent>;
+  /** 現在のターンに追加指示を渡す。新しいターンは開始しない。 */
+  steer?(sessionId: string, prompt: string, task: { pid: number; outFile: string }): Promise<void>;
 }

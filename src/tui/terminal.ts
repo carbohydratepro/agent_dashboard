@@ -17,6 +17,7 @@ import {
 import type { ColorMode } from './ansi.ts';
 import { KeyDecoder } from './input.ts';
 import type { Key } from './input.ts';
+import { copyText } from './clipboard.ts';
 
 /** ブラケットペースト。IME の確定文字列やペーストを 1 かたまりで受け取る */
 const PASTE_MODE_ON = '\x1b[?2004h';
@@ -35,6 +36,7 @@ export interface Terminal {
   enter(): void;
   exit(): void;
   bell(): void;
+  copyText(text: string): Promise<void>;
 }
 
 export class NodeTerminal implements Terminal {
@@ -56,7 +58,10 @@ export class NodeTerminal implements Terminal {
 
   readonly colorMode: ColorMode;
 
-  constructor(stdin = process.stdin, stdout = process.stdout) {
+  constructor(
+    stdin: NodeJS.ReadStream = process.stdin,
+    stdout: NodeJS.WriteStream = process.stdout,
+  ) {
     this.#stdin = stdin;
     this.#stdout = stdout;
     this.colorMode = detectColorMode();
@@ -96,7 +101,9 @@ export class NodeTerminal implements Terminal {
       clearTimeout(this.#flushTimer);
       this.#flushTimer = null;
     }
-    if (!this.#decoder.hasPending) return;
+    // 長文貼付けは25ms以上空いて分割されることがある。途中でflushすると
+    // 続きのCRが送信キーとして解釈されるため、貼付け終端までは確定しない。
+    if (!this.#decoder.hasPending || this.#decoder.isPasting) return;
     this.#flushTimer = setTimeout(() => {
       this.#flushTimer = null;
       this.#emit(this.#decoder.flush());
@@ -111,7 +118,9 @@ export class NodeTerminal implements Terminal {
     this.#stdin.resume();
     this.#stdin.on('data', this.#onData);
     this.#stdout.on('resize', this.#onResize);
-    this.write(ALT_SCREEN_ON + CURSOR_HIDE + CLEAR_SCREEN + PASTE_MODE_ON + MODIFY_OTHER_KEYS_ON + MOUSE_ON);
+    // SGR button-motion reports support drag selection and independent wheel history.
+    // Terminal-native selection remains available with Shift+drag.
+    this.write(ALT_SCREEN_ON + MOUSE_ON + CURSOR_HIDE + CLEAR_SCREEN + PASTE_MODE_ON + MODIFY_OTHER_KEYS_ON);
   }
 
   exit(): void {
@@ -129,6 +138,10 @@ export class NodeTerminal implements Terminal {
   bell(): void {
     this.write('\x07');
   }
+
+  copyText(text: string): Promise<void> {
+    return copyText(text, (data) => this.write(data));
+  }
 }
 
 /** テスト用。書き込みを溜めるだけ。 */
@@ -138,6 +151,7 @@ export class FakeTerminal implements Terminal {
   colorMode: ColorMode = 'none';
   readonly output: string[] = [];
   bells = 0;
+  readonly copies: string[] = [];
   entered = false;
 
   #keyHandlers = new Set<(key: Key) => void>();
@@ -174,11 +188,16 @@ export class FakeTerminal implements Terminal {
     this.bells += 1;
   }
 
+  async copyText(text: string): Promise<void> {
+    this.copies.push(text);
+  }
+
   #decoder = new KeyDecoder();
 
   /** 生の入力を流し込む。実端末と同じデコーダを通す。 */
   feed(raw: string | Buffer): void {
-    const keys = [...this.#decoder.write(raw), ...this.#decoder.flush()];
+    const keys = this.#decoder.write(raw);
+    if (!this.#decoder.isPasting) keys.push(...this.#decoder.flush());
     for (const k of keys) {
       for (const h of this.#keyHandlers) h(k);
     }
