@@ -12,7 +12,7 @@ export interface DashboardConfig {
     cwd: string;
   };
   approvals: { alwaysAllow: string[] };
-  workspace: { autoWorktree: boolean; worktreeBranchPrefix: string };
+  workspace: { autoWorktree: boolean; worktreeBranchPrefix: string; serializeByCwd: boolean };
   network: {
     watch: boolean;
     pollIntervalMs: number;
@@ -80,7 +80,7 @@ export function defaultConfig(): DashboardConfig {
       cwd: process.cwd(),
     },
     approvals: { alwaysAllow: [] },
-    workspace: { autoWorktree: true, worktreeBranchPrefix: 'vo/' },
+    workspace: { autoWorktree: true, worktreeBranchPrefix: 'vo/', serializeByCwd: true },
     network: {
       watch: true,
       pollIntervalMs: 5_000,

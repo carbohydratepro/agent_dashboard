@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# 開発元へ渡す修正済みソースZIPを、現在の作業ツリーから更新する。
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT="${1:-${REPO_DIR}-developer-handoff.zip}"
+
+if ! command -v zip >/dev/null 2>&1; then
+  echo 'zip コマンドが見つかりません。' >&2
+  exit 1
+fi
+
+mapfile -t FILES < <(
+  git -C "$REPO_DIR" ls-files --cached --others --exclude-standard -- \
+    . \
+    ':(exclude)mcp/**' \
+    ':(exclude).codex/**'
+)
+
+if ((${#FILES[@]} == 0)); then
+  echo '収録できるファイルがありません。' >&2
+  exit 1
+fi
+
+(
+  cd "$REPO_DIR"
+  zip -q -FS "$OUTPUT" "${FILES[@]}"
+)
+
+echo "$OUTPUT"

@@ -7,9 +7,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  analyzeSessionLog,
+  findExistingSession,
   listExistingSessions,
   parseClaudeSession,
   parseCodexSession,
+  readCodexThreadNames,
   readHead,
   readSessionTranscript,
   summarizeTranscript,
@@ -113,6 +116,12 @@ function writeCodexSession(
   return path;
 }
 
+function writeCodexIndex(records: Array<Record<string, unknown>>): string {
+  const path = join(root, 'codex', 'session_index.jsonl');
+  writeFileSync(path, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  return path;
+}
+
 // ---------------------------------------------------------------------------
 
 describe('見出しの作り方', () => {
@@ -178,6 +187,19 @@ describe('codex のセッション', () => {
   test('session_meta が無ければ一覧に出さない', () => {
     assert.equal(parseCodexSession('/x/rollout-a.jsonl', '{"type":"event_msg"}', 0), null);
   });
+
+  test('Codex が生成した会話題名を索引から読む', () => {
+    const path = writeCodexIndex([
+      { id: 'thread-1', thread_name: '最初の題名' },
+      { broken: true },
+      { id: 'thread-1', thread_name: '更新後の題名' },
+      { id: 'thread-2', thread_name: '別の題名' },
+    ]);
+    const names = readCodexThreadNames(path);
+
+    assert.equal(names.get('thread-1'), '更新後の題名', '同じ ID は最後の記録を使う');
+    assert.equal(names.get('thread-2'), '別の題名');
+  });
 });
 
 describe('一覧', () => {
@@ -193,6 +215,24 @@ describe('一覧', () => {
     assert.equal(list.length, 3);
     assert.deepEqual(list.map((s) => s.kind), ['codex', 'claude', 'claude']);
     assert.equal(list[1]!.title, '新しい会話');
+  });
+
+  test('Codex 自身が生成した題名を最初の投稿より優先する', () => {
+    const id = '01a09e76-b131-7591-932d-99f9bbf16913';
+    writeCodexSession(id, { firstUser: 'https://github.com/example/repository' });
+    writeCodexIndex([{ id, thread_name: '導入可否を確認する' }]);
+
+    const list = listExistingSessions({ claudeRoot, codexRoot });
+    assert.equal(list[0]?.title, '導入可否を確認する');
+  });
+
+  test('Codex の生成題名が無ければ最初の投稿を使う', () => {
+    const id = '019f0000-0000-7000-8000-000000000009';
+    writeCodexSession(id, { firstUser: '認証処理を調べて' });
+    writeCodexIndex([{ id: '別の会話', thread_name: '別の題名' }]);
+
+    const list = listExistingSessions({ claudeRoot, codexRoot });
+    assert.equal(list[0]?.title, '認証処理を調べて');
   });
 
   test('件数を絞れる', () => {
@@ -282,7 +322,6 @@ describe('取り込みの画面', () => {
     h.press('\x1b[C');
     const text = h.view();
     assert.ok(text.includes('既存の会話を取り込む'));
-    assert.equal(text.includes('作業ディレクトリ'), false, '引き継ぐ会話の場所を使うので出さない');
   });
 
   test('一覧にあるのセッションが握っている会話は一覧に出さない', () => {
@@ -361,6 +400,33 @@ describe('取り込みの画面', () => {
       h.press('\x1b');
       assert.equal(h.app.screenId, 'hire');
     });
+  });
+
+  test('再起動後も取り込んだ CLI 会話の過去ログを表示する', () => {
+    const id = '019f99a3-1924-77d3-923c-7203197906c2';
+    writeCodexSession(id, { firstUser: '再起動前に依頼した内容' });
+
+    const store = new StateStore(createDashboard({ slotCount: 6 }));
+    const manager = new SessionManager({
+      store,
+      drivers: { codex: new MockDriver({ kind: 'codex', assignsOwnSessionId: true }) },
+      ids: new SeqIdGen(),
+      config: { defaultCwd: '/ws' },
+    });
+    manager.createSession({ kind: 'codex', agentSessionId: id });
+    const app = new App({
+      manager,
+      terminal: new FakeTerminal(100, 32),
+      animate: false,
+      bell: false,
+      loadAgentSession: (kind, sessionId) =>
+        findExistingSession(kind, sessionId, { claudeRoot, codexRoot }),
+    });
+    app.start();
+    for (const key of decodeKeys('\r')) app.handleKey(key);
+    app.render();
+
+    assert.ok(app.screen.toStrings().join('\n').includes('再起動前に依頼した内容'));
   });
 });
 
@@ -466,6 +532,76 @@ describe('会話の中身を読み戻す', () => {
     assert.equal(experience.commandsRun, 1);
   });
 
+  test('新しい codex の response_item 形式から発話を読める', () => {
+    const id = '019f99a3-1924-77d3-923c-7203197906c2';
+    const dir = join(codexRoot, '2026', '08', '24');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `rollout-new-${id}.jsonl`);
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ type: 'session_meta', payload: { session_id: id, cwd: '/new' } }),
+        JSON.stringify({
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: '<environment_context>注入情報</environment_context>' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: '過去の質問です' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: '過去の回答です' }],
+          },
+        }),
+      ].join('\n'),
+    );
+
+    const source = parseCodexSession(path, readHead(path, 65_536), 0)!;
+    assert.equal(source.title, '過去の質問です', '索引が無くても最初の実発話を題名にする');
+
+    const { items, experience } = readSessionTranscript(source);
+    assert.deepEqual(items, [
+      { t: 'user', text: '過去の質問です' },
+      { t: 'assistant', text: '過去の回答です' },
+    ]);
+    assert.equal(experience.turns, 1, '注入情報を投稿数に含めない');
+  });
+
+  test('利用者が Markdown や HTML で始めた発話は注入情報と誤認しない', () => {
+    const id = '019f99a3-1924-77d3-923c-7203197906c3';
+    const dir = join(codexRoot, '2026', '08', '25');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `rollout-markup-${id}.jsonl`);
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ type: 'session_meta', payload: { session_id: id, cwd: '/markup' } }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: '# 見出しから始める依頼' } }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: '<div>HTMLを確認して</div>' } }),
+      ].join('\n'),
+    );
+
+    const { items } = readSessionTranscript({
+      kind: 'codex', sessionId: id, cwd: '/markup', title: '', updatedAt: 0, path,
+    });
+    assert.deepEqual(items.map((item) => item.t === 'tool' ? item.detail : item.text), [
+      '# 見出しから始める依頼',
+      '<div>HTMLを確認して</div>',
+    ]);
+  });
+
   test('長い会話は末尾だけ残し、省略したことを伝える', () => {
     const dir = join(claudeRoot, '-long');
     mkdirSync(dir, { recursive: true });
@@ -539,6 +675,132 @@ describe('取り込み元の実績', () => {
       config: { defaultCwd: '/ws' },
     });
     const emp = manager.createSession({ kind: 'claude' });
+  });
+});
+
+describe('CLI セッション全期間の集計', () => {
+  test('Codex の各モデル呼び出しをターン別に積み上げる', async () => {
+    const id = '019f0000-0000-7000-8000-000000000099';
+    const path = writeCodexSession(id);
+    const records = [
+      { timestamp: '2026-09-01T00:00:00.000Z', type: 'session_meta', payload: { session_id: id, cwd: '/work' } },
+      { timestamp: '2026-09-01T00:00:01.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 't1', started_at: 1_788_192_001, model_context_window: 200_000 } },
+      { timestamp: '2026-09-01T00:00:02.000Z', type: 'event_msg', payload: { type: 'user_message', message: '認証を直して' } },
+      { timestamp: '2026-09-01T00:00:03.000Z', type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 20, reasoning_output_tokens: 5, total_tokens: 120 }, model_context_window: 200_000 } } },
+      { timestamp: '2026-09-01T00:00:04.000Z', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'CommandExecution', id: 'cmd-1', stdout: 'x'.repeat(100_000) } } },
+      { timestamp: '2026-09-01T00:00:05.000Z', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'FileChange', id: 'edit-1', changes: { '/work/a.ts': { type: 'update', unified_diff: 'x' }, '/work/b.ts': { type: 'add', unified_diff: 'y' } } } } },
+      { timestamp: '2026-09-01T00:00:06.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 't1', started_at: 1_788_192_001, completed_at: 1_788_192_006, duration_ms: 5_000 } },
+      { timestamp: '2026-09-01T00:00:07.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 't2', started_at: 1_788_192_007 } },
+      { timestamp: '2026-09-01T00:00:08.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'テストして' } },
+      { timestamp: '2026-09-01T00:00:09.000Z', type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 200, cached_input_tokens: 80, output_tokens: 30, reasoning_output_tokens: 7, total_tokens: 230 }, model_context_window: 200_000 } } },
+    ];
+    writeFileSync(path, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+    const source: ExistingSession = { kind: 'codex', sessionId: id, cwd: '/work', title: '', updatedAt: 0, path };
+
+    const analysis = await analyzeSessionLog(source);
+
+    assert.equal(analysis.lifetime.tasksCompleted, 1);
+    assert.equal(analysis.lifetime.commandsRun, 1);
+    assert.equal(analysis.lifetime.filesEdited, 2, '1回の変更に複数ファイルがあれば個別に数える');
+    assert.equal(analysis.lifetime.activeMs, 5_000);
+    assert.equal(analysis.lifetime.tokens.inputTokens, 300);
+    assert.equal(analysis.lifetime.tokens.outputTokens, 50);
+    assert.equal(analysis.lifetime.contextTokens, 200, '最後のモデル呼び出しが現在の文脈');
+    assert.equal(analysis.lifetime.contextWindow, 200_000);
+    assert.equal(analysis.lifetime.timedTurns, 1);
+    assert.equal(analysis.lifetime.typicalTurnMs, 5_000);
+    assert.equal(analysis.turns.length, 2);
+    assert.equal(analysis.turns[0]?.label, '認証を直して');
+    assert.equal(analysis.turns[0]?.tokens.totalTokens, 120);
+    assert.equal(analysis.turns[1]?.complete, false);
+  });
+
+  test('完了目安には取得できたターン所要時間の中央値を使う', async () => {
+    const id = '019f0000-0000-7000-8000-000000000098';
+    const path = writeCodexSession(id);
+    const records = [
+      { timestamp: '2026-09-01T00:00:00.000Z', type: 'session_meta', payload: { session_id: id, cwd: '/work' } },
+      { timestamp: '2026-09-01T00:00:01.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 't1' } },
+      { timestamp: '2026-09-01T00:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 't1', duration_ms: 1_000 } },
+      { timestamp: '2026-09-01T00:00:03.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 't2' } },
+      { timestamp: '2026-09-01T00:00:12.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 't2', duration_ms: 9_000 } },
+      { timestamp: '2026-09-01T00:00:13.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 't3' } },
+      { timestamp: '2026-09-01T00:00:16.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 't3', duration_ms: 3_000 } },
+    ];
+    writeFileSync(path, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+    const source: ExistingSession = { kind: 'codex', sessionId: id, cwd: '/work', title: '', updatedAt: 0, path };
+
+    const analysis = await analyzeSessionLog(source);
+
+    assert.equal(analysis.lifetime.timedTurns, 3);
+    assert.equal(analysis.lifetime.typicalTurnMs, 3_000);
+  });
+
+  test('Claude の分割レコードは message.id 単位で重複排除する', async () => {
+    const dir = join(claudeRoot, '-analysis');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${CLAUDE_ID}.jsonl`);
+    const usage1 = { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 };
+    const records = [
+      { type: 'user', uuid: 'u1', timestamp: '2026-09-01T00:00:00.000Z', message: { role: 'user', content: 'ログを直して' } },
+      { type: 'assistant', timestamp: '2026-09-01T00:00:02.000Z', message: { id: 'm1', role: 'assistant', content: [{ type: 'tool_use', id: 'tool-1', name: 'Edit', input: {} }], stop_reason: 'tool_use', usage: usage1 } },
+      { type: 'assistant', timestamp: '2026-09-01T00:00:03.000Z', message: { id: 'm1', role: 'assistant', content: [{ type: 'tool_use', id: 'tool-2', name: 'Bash', input: {} }], stop_reason: 'tool_use', usage: usage1 } },
+      { type: 'user', timestamp: '2026-09-01T00:00:04.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-2' }] } },
+      { type: 'assistant', timestamp: '2026-09-01T00:00:10.000Z', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: '完了' }], stop_reason: 'end_turn', usage: { input_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 5, output_tokens: 6 } } },
+    ];
+    writeFileSync(path, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+    const source: ExistingSession = { kind: 'claude', sessionId: CLAUDE_ID, cwd: '/work', title: '', updatedAt: 0, path };
+
+    const analysis = await analyzeSessionLog(source);
+
+    assert.equal(analysis.lifetime.tasksCompleted, 1);
+    assert.equal(analysis.lifetime.filesEdited, 1);
+    assert.equal(analysis.lifetime.commandsRun, 1);
+    assert.equal(analysis.lifetime.activeMs, 10_000);
+    assert.equal(analysis.lifetime.tokens.inputTokens, 13, 'm1 は分割されても 1 回だけ数える');
+    assert.equal(analysis.lifetime.tokens.outputTokens, 10);
+    assert.equal(analysis.lifetime.contextTokens, 7);
+    assert.equal(analysis.turns[0]?.tokens.totalTokens, 23);
+  });
+
+  test('統計画面にターン別グラフを表示する', async () => {
+    const id = '019f0000-0000-7000-8000-000000000077';
+    const path = writeCodexSession(id);
+    writeFileSync(path, [
+      JSON.stringify({ timestamp: '2026-09-01T00:00:00.000Z', type: 'session_meta', payload: { session_id: id, cwd: '/work' } }),
+      JSON.stringify({ timestamp: '2026-09-01T00:00:01.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 't1', started_at: 1_788_192_001 } }),
+      JSON.stringify({ timestamp: '2026-09-01T00:00:02.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'グラフを確認する' } }),
+      JSON.stringify({ timestamp: '2026-09-01T00:00:03.000Z', type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 1_000, cached_input_tokens: 500, output_tokens: 200, reasoning_output_tokens: 50, total_tokens: 1_200 } } } }),
+      JSON.stringify({ timestamp: '2026-09-01T00:00:04.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 't1', duration_ms: 3_000 } }),
+    ].join('\n'));
+    const source: ExistingSession = { kind: 'codex', sessionId: id, cwd: '/work', title: 'グラフ', updatedAt: 1, path };
+    const store = new StateStore(createDashboard({ slotCount: 2 }));
+    const manager = new SessionManager({
+      store,
+      drivers: { codex: new MockDriver({ kind: 'codex', assignsOwnSessionId: true }) },
+      ids: new SeqIdGen(),
+      config: { defaultCwd: '/work' },
+    });
+    const session = manager.createSession({ kind: 'codex', agentSessionId: id, name: '調査' });
+    const app = new App({
+      manager,
+      terminal: new FakeTerminal(120, 40),
+      animate: false,
+      bell: false,
+      loadAgentSession: () => source,
+    });
+    app.start();
+    for (let i = 0; i < 50 && !session.lifetime; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    for (const key of decodeKeys('s')) app.handleKey(key);
+    const view = app.screen.toStrings().join('\n');
+
+    assert.ok(view.includes('会話ごとの消費トークン'));
+    assert.ok(view.includes('グラフを確認する'));
+    assert.ok(view.includes('in 1,000 / out 200'));
+    assert.ok(view.includes('セッション切替'));
+    app.stop();
   });
 });
 
@@ -723,6 +985,11 @@ describe('codex の会話一覧', () => {
     payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
   });
 
+  const agentMsg = (message: string) => ({
+    type: 'event_msg',
+    payload: { type: 'agent_message', message },
+  });
+
   function list() {
     return listExistingSessions({ codexRoot: dir, claudeRoot: join(dir, 'none'), limit: 40 });
   }
@@ -787,6 +1054,24 @@ describe('codex の会話一覧', () => {
     assert.deepEqual(
       found.map((s) => s.title).sort(),
       ['ひとつ目', 'ふたつ目'],
+    );
+  });
+
+  test('resume で分かれた過去ログを古い順に読み合わせる', () => {
+    const id = '019f0000-0000-7000-8000-000000000077';
+    rollout('2026-09-01T10-00-00', id, [userMsg('最初の依頼'), agentMsg('最初の回答')], 1_000);
+    rollout('2026-09-02T10-00-00', id, [userMsg('続きの依頼'), agentMsg('続きの回答')], 2_000);
+
+    const source = findExistingSession('codex', id, {
+      codexRoot: dir,
+      claudeRoot: join(dir, 'none'),
+    });
+    assert.ok(source);
+    assert.equal(source.paths?.length, 2);
+    const transcript = readSessionTranscript(source!);
+    assert.deepEqual(
+      transcript.items.map((item) => (item.t === 'tool' ? item.detail : item.text)),
+      ['最初の依頼', '最初の回答', '続きの依頼', '続きの回答'],
     );
   });
 });

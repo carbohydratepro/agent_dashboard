@@ -131,10 +131,10 @@ export class RecoveryCoordinator {
       return report;
     }
 
-    // 同じ場所を触るセッションどうしは直列、隔離済みなら並行（SPEC §10.4）
+    // 同一ディレクトリの並行利用設定は、ネットワーク復帰にも適用する。
     const groups = new Map<string, Session[]>();
     for (const emp of targets) {
-      const key = emp.workspace.actualCwd;
+      const key = this.#manager.config.serializeByCwd ? emp.workspace.actualCwd : emp.id;
       const list = groups.get(key) ?? [];
       list.push(emp);
       groups.set(key, list);

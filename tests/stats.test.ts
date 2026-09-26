@@ -3,8 +3,16 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createStats, tokensPerTask, utilization } from '../src/core/stats.ts';
+import {
+  createStats,
+  displayActiveMs,
+  displayStartedAt,
+  displayStats,
+  tokensPerTask,
+  utilization,
+} from '../src/core/stats.ts';
 import { colorForSlot, nextName, ROLE_PROMPT, ROLES } from '../src/core/naming.ts';
+import { sampleDashboard } from './fixtures/dashboard.ts';
 
 describe('集計', () => {
   test('初期値はすべて 0', () => {
@@ -30,6 +38,32 @@ describe('集計', () => {
 
     stats.tasksCompleted = 0;
     assert.equal(tokensPerTask(stats), null, 'タスクが無ければ出せない');
+  });
+
+  test('CLI ログがあれば会話開始時点からの値を表示する', () => {
+    const session = sampleDashboard().sessions[0]!;
+    session.lifetime = {
+      startedAt: 100,
+      activeMs: 20,
+      tasksCompleted: 30,
+      filesEdited: 40,
+      commandsRun: 50,
+      tokens: { inputTokens: 600, cachedInputTokens: 300, outputTokens: 70, reasoningTokens: 10, totalTokens: 670 },
+      contextTokens: 80,
+      contextWindow: 1_000,
+      hasTokenUsage: true,
+      hasTiming: true,
+      updatedAt: 200,
+    };
+
+    const shown = displayStats(session);
+    assert.equal(shown.tasksCompleted, 30);
+    assert.equal(shown.filesEdited, 40);
+    assert.equal(shown.commandsRun, 50);
+    assert.equal(shown.totalTokensIn + shown.totalTokensOut, 670);
+    assert.equal(displayStartedAt(session), 100);
+    assert.equal(displayActiveMs(session), 20);
+    assert.equal(session.stats.tasksCompleted, 16, '月次会計用の値は書き換えない');
   });
 });
 

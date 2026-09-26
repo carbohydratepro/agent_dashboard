@@ -12,6 +12,7 @@
  */
 
 import type { Session } from './types.ts';
+import { displayStats } from './stats.ts';
 import { STATE_LABEL_JA } from '../tui/theme.ts';
 import { readCodexModelInfo } from './models.ts';
 import type { CodexModelInfo } from './models.ts';
@@ -116,7 +117,7 @@ export function runLocalCommand(input: string, ctx: LocalCommandContext): LocalC
 }
 
 function statusText(session: Session, usageLine: string | null): string {
-  const st = session.stats;
+  const st = displayStats(session);
   const ctx = session.context;
   const lines = [
     `${session.name} (${session.kind})  ${STATE_LABEL_JA[session.state]}`,

@@ -9,7 +9,12 @@ import { gaugeColor, sessionColor, STATE_LABEL_JA } from '../theme.ts';
 import { drawGauge, fillRect, hline, textClipped, textRight, wrapText } from '../paint.ts';
 import { displayWidth } from '../width.ts';
 import { ROLE_LABEL } from '../../core/naming.ts';
-import { utilization } from '../../core/stats.ts';
+import {
+  displayActiveMs,
+  displayStartedAt,
+  displayStats,
+  utilization,
+} from '../../core/stats.ts';
 import { formatDuration, formatPercent, formatTokens } from './format.ts';
 import { modelFor } from './table.ts';
 import type { CodexDefaults } from './table.ts';
@@ -68,6 +73,23 @@ export function canSendDraft(session: Session): boolean {
   return !BUSY_STATES.has(session.state) && session.drafts.length > 0;
 }
 
+export interface CompletionEstimate {
+  at: number;
+  basedOnTurns: number;
+}
+
+/**
+ * ターン内容は大きく異なるため、予測ではなく過去所要時間の中央値による目安だけを返す。
+ * 2件以下では振れが大きすぎるので表示しない。
+ */
+export function completionEstimate(session: Session): CompletionEstimate | null {
+  const task = session.currentTask;
+  const typical = session.lifetime?.typicalTurnMs;
+  const count = session.lifetime?.timedTurns ?? 0;
+  if (task?.status !== 'running' || !typical || count < 3) return null;
+  return { at: task.startedAt + typical, basedOnTurns: count };
+}
+
 export function drawDetail(screen: Screen, rect: Rect, s: DetailViewState): void {
   const { theme } = s;
   fillRect(screen, rect.x, rect.y, rect.w, rect.h, theme.panelBg);
@@ -99,9 +121,10 @@ export function drawDetail(screen: Screen, rect: Rect, s: DetailViewState): void
   // コンテキストと稼働。狭いところではゲージから先に捨てる。
   const pct = Math.round(session.context.ratio * 100);
   const estimated = session.context.estimated ? '~' : '';
-  const elapsed = Math.max(1, s.now - session.uptime.startedAt);
+  const elapsed = Math.max(1, s.now - displayStartedAt(session));
+  const activeMs = displayActiveMs(session);
 
-  const uptimeFull = `経過 ${formatDuration(elapsed)}  実働 ${formatDuration(session.uptime.activeMs)}  稼働率 ${formatPercent(utilization(session.uptime.activeMs, elapsed))}`;
+  const uptimeFull = `経過 ${formatDuration(elapsed)}  実働 ${formatDuration(activeMs)}  稼働率 ${formatPercent(utilization(activeMs, elapsed))}`;
   const uptimeShort = `経過 ${formatDuration(elapsed)}`;
   const uptime = inner >= 62 ? uptimeFull : uptimeShort;
   const ctxNumbers = `${pct}%${estimated}  ${formatTokens(session.context.usedTokens)}/${formatTokens(session.context.windowTokens)}`;
@@ -126,7 +149,7 @@ export function drawDetail(screen: Screen, rect: Rect, s: DetailViewState): void
   y += 1;
 
   // 集計
-  const st = session.stats;
+  const st = displayStats(session);
   textClipped(
     screen,
     rect.x + 2,
@@ -213,6 +236,18 @@ export function drawDetail(screen: Screen, rect: Rect, s: DetailViewState): void
   const task = session.currentTask;
   if (task && y < rect.y + rect.h - 1) {
     const taskElapsed = formatDuration((task.endedAt ?? s.now) - task.startedAt);
+    const estimate = completionEstimate(session);
+    const estimateTime = estimate
+      ? new Date(estimate.at).toLocaleTimeString('ja-JP', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        })
+      : null;
+    const estimateLabel = estimateTime
+      ? `  目安 ${estimateTime}頃${s.now > estimate!.at ? '（超過）' : ''}`
+      : '';
+    const timing = `${taskElapsed}${estimateLabel}`;
     const mark = task.status === 'running' ? '▸' : task.status === 'done' ? '✓' : '×';
     const color =
       task.status === 'done'
@@ -220,8 +255,15 @@ export function drawDetail(screen: Screen, rect: Rect, s: DetailViewState): void
         : task.status === 'running'
           ? theme.text
           : theme.gauge.high;
-    textClipped(screen, rect.x + 2, y, inner - 12, `${mark} ${task.prompt}`, { fg: color, bg });
-    textRight(screen, rect.x + 2, y, inner, taskElapsed, { fg: theme.textDim, bg });
+    textClipped(
+      screen,
+      rect.x + 2,
+      y,
+      Math.max(8, inner - displayWidth(timing) - 2),
+      `${mark} ${task.prompt}`,
+      { fg: color, bg },
+    );
+    textRight(screen, rect.x + 2, y, inner, timing, { fg: theme.textDim, bg });
     y += 1;
 
     // 動いている間だけ、いま何をしているかを出す。

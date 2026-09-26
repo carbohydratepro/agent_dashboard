@@ -270,4 +270,19 @@ describe('切り離して走らせる', () => {
     assert.equal(exit.code, 3);
     assert.match(exit.stderr, /こわれた/);
   });
+
+  test('存在しない cwd でもアプリを落とさず起動失敗を返す', async () => {
+    const outFile = join(dir, 'missing-cwd.jsonl');
+    const events = await collect(runProcess({
+      command: process.execPath,
+      args: ['-e', 'console.log("実行されない")'],
+      cwd: join(dir, '存在しない'),
+      outFile,
+    }));
+
+    const exit = events.at(-1);
+    assert.equal(exit?.t, 'exit');
+    assert.notEqual(exit.code, 0);
+    assert.match(exit.stderr, /ENOENT/);
+  });
 });

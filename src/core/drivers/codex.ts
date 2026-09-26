@@ -8,12 +8,14 @@
 
 import type { AgentDriver, AttachOpts, StartOpts, TurnOpts } from './driver.ts';
 import type { AgentEvent } from '../types.ts';
+import { isGitRepo, systemGit, type GitRunner } from '../git.ts';
 import { CodexParser } from './codex-parser.ts';
 import { attachProcess, runProcess } from './process.ts';
 
 export interface CodexDriverOptions {
   bin?: string;
   killGraceMs?: number;
+  git?: GitRunner;
 }
 
 export class CodexDriver implements AgentDriver {
@@ -21,14 +23,19 @@ export class CodexDriver implements AgentDriver {
 
   #bin: string;
   #killGraceMs: number;
+  #git: GitRunner;
 
   constructor(opts: CodexDriverOptions = {}) {
     this.#bin = opts.bin ?? 'codex';
     this.#killGraceMs = opts.killGraceMs ?? 5_000;
+    this.#git = opts.git ?? systemGit;
   }
 
   async *start(opts: StartOpts): AsyncIterable<AgentEvent> {
-    const args = ['exec', opts.prompt, '--json'];
+    const args = ['exec'];
+    // Codex は通常 Git 管理外では起動しない。利用者がそのフォルダーを明示した場合だけ許可する。
+    if (!(await isGitRepo(this.#git, opts.cwd))) args.push('--skip-git-repo-check');
+    args.push(opts.prompt, '--json');
     if (opts.model) args.push('-m', opts.model);
     if (opts.reasoning) args.push('-c', `model_reasoning_effort="${opts.reasoning}"`);
     // サンドボックスはここでしか指定できない。以後このセッションの生涯にわたり固定される
@@ -40,6 +47,7 @@ export class CodexDriver implements AgentDriver {
   async *resume(sessionId: string, opts: TurnOpts): AsyncIterable<AgentEvent> {
     // ★オプションは位置引数より前★ 逆にすると unexpected argument で落ちる
     const args = ['exec', 'resume', '--json'];
+    if (!(await isGitRepo(this.#git, opts.cwd))) args.push('--skip-git-repo-check');
 
     // resume は -m を受け付けない。設定の上書き（-c）でなら変えられる。
     // これが無いと、途中でモデルを変えても最初のモデルのまま動き続ける。

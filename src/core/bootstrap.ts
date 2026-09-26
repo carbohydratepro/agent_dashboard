@@ -16,7 +16,7 @@ import { WorkspaceManager } from './workspace.ts';
 import { NetworkMonitor } from './network.ts';
 import { RecoveryCoordinator } from './recovery.ts';
 import { ClaudeDriver } from './drivers/claude.ts';
-import { CodexDriver } from './drivers/codex.ts';
+import { CodexAppServerDriver } from './drivers/codex-app-server.ts';
 import { attachAutosave } from './autosave.ts';
 import { closeMonthsIfNeeded } from './analytics.ts';
 import { UsageMonitor } from './usage-monitor.ts';
@@ -124,7 +124,7 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
           `${kind} のバージョンが検証済み (${VERIFIED_VERSIONS[kind]}) と違います: ${version}`,
         );
       }
-      drivers[kind] = kind === 'claude' ? new ClaudeDriver() : new CodexDriver();
+      drivers[kind] = kind === 'claude' ? new ClaudeDriver() : new CodexAppServerDriver();
     }
   }
 
@@ -149,6 +149,7 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
       contextRestThreshold: config.thresholds.contextRest,
       defaultCwd: config.defaults.cwd,
       alwaysAllowedTools: [...config.approvals.alwaysAllow],
+      serializeByCwd: config.workspace.serializeByCwd,
     },
     onRawLine: (sessionId, line) => persistence.appendRaw(sessionId, line),
   });
@@ -159,12 +160,35 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
 
   const stillRunning: string[] = [];
   for (const { session, unfinishedPrompt, stillRunning: running } of loaded) {
+    let repairedSession = false;
     if (running) stillRunning.push(session.id);
     // 4. worktree の実在確認
+    const wasPlainWorkspace = session.workspace.isolation !== 'worktree';
     const check = workspace.verify(session.workspace);
     if (!check.ok && check.repaired) {
       session.workspace = check.repaired;
+      repairedSession = true;
       warnings.push(`${session.name} の worktree が見つかりません。隔離を解除しました。`);
+    }
+    // 通常ディレクトリも削除・入力間違いで消えることがある。存在しない cwd のまま
+    // CLI を起動せず、利用可能な既定ディレクトリへ戻す。
+    if (
+      wasPlainWorkspace &&
+      !existsSync(session.workspace.actualCwd) &&
+      existsSync(config.defaults.cwd)
+    ) {
+      const missing = session.workspace.actualCwd;
+      session.workspace = {
+        ...session.workspace,
+        requestedCwd: config.defaults.cwd,
+        actualCwd: config.defaults.cwd,
+        isolation: 'none',
+        branch: null,
+      };
+      repairedSession = true;
+      warnings.push(
+        `${session.name} の作業ディレクトリ ${missing} が見つからないため ${config.defaults.cwd} に戻しました。`,
+      );
     }
     // 6. 前回の作業を中断扱いにし、プロンプトを下書きへ戻す
     if (unfinishedPrompt) {
@@ -175,7 +199,10 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapResult
         text: unfinishedPrompt,
         updatedAt: now(),
       });
+      repairedSession = true;
     }
+    // 修復内容と戻した控えは、この起動中に再度終了しても失わないよう即座に保存する。
+    if (repairedSession) persistence.saveSession(session);
   }
   warnings.push(...manager.loadSessions(loaded.map((l) => l.session)));
 

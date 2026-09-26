@@ -36,7 +36,7 @@ interface Harness {
   clock: FakeClock;
 }
 
-function harness(opts: { maxRetries?: number; autoRecover?: boolean; monitor?: NetworkMonitor } = {}): Harness {
+function harness(opts: { maxRetries?: number; autoRecover?: boolean; monitor?: NetworkMonitor; serializeByCwd?: boolean } = {}): Harness {
   const clock = new FakeClock();
   const store = new StateStore(createDashboard());
   const claude = new MockDriver({ kind: 'claude' });
@@ -47,7 +47,7 @@ function harness(opts: { maxRetries?: number; autoRecover?: boolean; monitor?: N
     drivers: { claude, codex },
     clock,
     ids: new SeqIdGen(),
-    config: { defaultCwd: '/ws' },
+    config: { defaultCwd: '/ws', serializeByCwd: opts.serializeByCwd ?? true },
   });
 
   const waits: number[] = [];
@@ -246,10 +246,10 @@ describe('同一ディレクトリでの復帰順序（SPEC §10.4）', () => {
     );
   });
 
-  test('隔離されていれば並行に復帰する', async () => {
-    const h = harness();
+  for (const shared of [false, true]) test(shared ? '並行設定なら同じディレクトリでも並行に復帰する' : '隔離されていれば並行に復帰する', async () => {
+    const h = harness({ serializeByCwd: !shared });
     const a = h.manager.createSession({ kind: 'claude', workspace: workspaceAt('/wt/a') });
-    const b = h.manager.createSession({ kind: 'claude', workspace: workspaceAt('/wt/b') });
+    const b = h.manager.createSession({ kind: 'claude', workspace: workspaceAt(shared ? '/wt/a' : '/wt/b') });
 
     const { running: ra } = await startHangingTurn(h, a, 'A の作業');
     const { running: rb } = await startHangingTurn(h, b, 'B の作業');

@@ -78,11 +78,13 @@ describe('設定', () => {
     const config = defaultConfig();
     config.ui.slotCount = 4;
     config.thresholds.contextRest = 0.7;
+    config.workspace.serializeByCwd = false;
     p.saveConfig(config);
 
     const loaded = new Persistence(root).loadConfig();
     assert.equal(loaded.ui.slotCount, 4);
     assert.equal(loaded.thresholds.contextRest, 0.7);
+    assert.equal(loaded.workspace.serializeByCwd, false);
   });
 
   test('知らないキーは無視し、足りないキーは既定値で埋める', () => {
@@ -92,6 +94,7 @@ describe('設定', () => {
     });
     assert.equal(merged.thresholds.contextRest, 0.7);
     assert.equal(merged.ui.slotCount, 8, '触っていないキーは既定値のまま');
+    assert.equal(merged.workspace.serializeByCwd, true, '古い設定は直列のまま');
     assert.equal('未知のセクション' in merged, false);
   });
 
@@ -102,11 +105,12 @@ describe('設定', () => {
 });
 
 describe('セッションの保存と読み戻し', () => {
-  test('識別名・スタッツ・下書き・セッション ID が残る', async () => {
+  test('識別名・会話タイトル・スタッツ・下書き・セッション ID が残る', async () => {
     const a = session();
     const emp = a.manager.createSession({ kind: 'claude', name: 'リク', role: 'backend' });
     await a.manager.dispatch(emp.id, 'やって');
     a.manager.addDraft(emp.id, '次はテスト');
+    a.manager.setConversationTitle(emp.id, '認証処理を改善する');
     await settle();
 
     const b = session();
@@ -116,9 +120,38 @@ describe('セッションの保存と読み戻し', () => {
     assert.equal(restored.id, emp.id);
     assert.equal(restored.name, emp.name);
     assert.equal(restored.role, 'backend');
+    assert.equal(restored.conversationTitle, '認証処理を改善する');
     assert.equal(restored.agentSessionId, emp.agentSessionId, '会話への紐が残る');
     assert.equal(restored.drafts[0]?.text, '次はテスト');
     assert.equal(restored.stats.tasksCompleted, 1);
+  });
+
+  test('CLI セッション全期間の集計が残り、古い保存には null を補う', async () => {
+    const a = session();
+    const emp = a.manager.createSession({ kind: 'codex' });
+    a.manager.setLifetime(emp.id, {
+      startedAt: 123,
+      activeMs: 456,
+      tasksCompleted: 7,
+      filesEdited: 8,
+      commandsRun: 9,
+      tokens: { inputTokens: 100, cachedInputTokens: 50, outputTokens: 20, reasoningTokens: 5, totalTokens: 120 },
+      contextTokens: 80,
+      contextWindow: 200_000,
+      hasTokenUsage: true,
+      hasTiming: true,
+      updatedAt: 789,
+    });
+    await settle();
+
+    const restored = session().store.active()[0]!;
+    assert.equal(restored.lifetime?.tasksCompleted, 7);
+    assert.equal(restored.context.prevInputTokens, 100);
+
+    const raw = JSON.parse(readFileSync(new Persistence(root).sessionPath(emp.id), 'utf8')) as Record<string, unknown>;
+    delete raw.lifetime;
+    writeFileSync(new Persistence(root).sessionPath(emp.id), JSON.stringify(raw));
+    assert.equal(new Persistence(root).loadSessions().loaded[0]?.session.lifetime, null);
   });
 
   test('立ち上げ直すと offline から始まる', async () => {
@@ -261,7 +294,7 @@ describe('起動シーケンス（SPEC §14.3）', () => {
 
     writeFileSync(
       join(root, 'config.json'),
-      JSON.stringify({ ui: { slotCount: 12 } }),
+      JSON.stringify({ ui: { slotCount: 12 }, workspace: { serializeByCwd: false } }),
     );
 
     const boot = await bootstrap({
@@ -270,6 +303,7 @@ describe('起動シーケンス（SPEC §14.3）', () => {
       skipVersionCheck: true,
     });
     assert.equal(boot.store.dashboard.slotCount, 12);
+    assert.equal(boot.manager.config.serializeByCwd, false);
   });
 
   test('設定ファイルが無ければ既定値で作る', async () => {
@@ -348,6 +382,25 @@ describe('起動シーケンス（SPEC §14.3）', () => {
     assert.equal(restored.workspace.isolation, 'none');
     assert.equal(restored.workspace.actualCwd, '/repo');
     assert.ok(boot.warnings.some((w) => w.includes('worktree')));
+  });
+
+  test('通常の作業ディレクトリが無ければ既定へ戻して保存する', async () => {
+    const a = session();
+    const missing = join(root, '存在しない');
+    const emp = a.manager.createSession({ kind: 'claude', cwd: missing });
+    a.persistence.saveSession(emp);
+
+    const config = defaultConfig();
+    config.defaults.cwd = root;
+    a.persistence.saveConfig(config);
+
+    const boot = await bootstrap({ root, drivers: {}, skipVersionCheck: true });
+    const restored = boot.store.active()[0]!;
+    assert.equal(restored.workspace.actualCwd, root);
+    assert.ok(boot.warnings.some((w) => w.includes(missing)));
+
+    const saved = a.persistence.loadSessions().loaded[0]!.session;
+    assert.equal(saved.workspace.actualCwd, root, '次回起動でも修復済み');
   });
 
   test('死んだロックを片付ける', async () => {

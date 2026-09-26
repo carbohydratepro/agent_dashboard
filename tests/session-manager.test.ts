@@ -430,6 +430,20 @@ describe('次に送るプロンプト（SPEC §12）', () => {
     await assert.rejects(() => h.manager.sendDraft(emp.id, 'ない'), /もうありません/);
   });
 
+  test('送信に失敗した控えは元の位置へ戻す', async () => {
+    const h = harness();
+    h.claude.setScenario(() => failingTurn('起動できません'));
+    const emp = h.manager.createSession({ kind: 'claude' });
+    h.manager.addDraft(emp.id, '前の控え');
+    const target = h.manager.addDraft(emp.id, '失敗する控え')!;
+    h.manager.addDraft(emp.id, '後ろの控え');
+
+    const task = await h.manager.sendDraft(emp.id, target.id);
+
+    assert.equal(task.status, 'failed');
+    assert.deepEqual(emp.drafts.map((d) => d.text), ['前の控え', '失敗する控え', '後ろの控え']);
+  });
+
   test('完了しても控えは自動で出て行かない', async () => {
     // 返答を見て別のことを頼みたい場面がある。勝手に送られると取り消せない。
     const h = harness();

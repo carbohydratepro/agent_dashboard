@@ -499,12 +499,13 @@ describe('過去の会話を遡る', () => {
     assert.equal(rows.some((r) => r.includes('↓ さらに')), false);
   });
 
-  test('キーバーに遡り方が出ている', () => {
+  test('キーバーに送信履歴と会話履歴の操作が出ている', () => {
     const rows = draw(longConversation(2));
-    assert.ok(rows.some((r) => r.includes('[Ctrl+U/D]遡る')));
+    assert.ok(rows.some((r) => r.includes('[↑/↓]入力内移動/送信履歴')));
+    assert.ok(rows.some((r) => r.includes('[ホイール]会話履歴')));
   });
 
-  test('前回までのやり取りが会話に入る', () => {
+  test('前回までのやり取りが会話と送信履歴に入る', async () => {
     // 起動し直しても、前に何を頼んで何が返ってきたかを読める
     const store = new StateStore(createDashboard({ slotCount: 6 }));
     const claude = new MockDriver({ kind: 'claude' });
@@ -545,6 +546,12 @@ describe('過去の会話を遡る', () => {
 
     assert.ok(view.includes('前回の指示'), '何を頼んだか');
     assert.ok(view.includes('前回の返事です。'), '何が返ってきたか');
+
+    for (const raw of ['\x1b[A', '\r']) {
+      for (const k of decodeKeys(raw)) app.handleKey(k);
+    }
+    await settle();
+    assert.equal(claude.calls[0]?.prompt, '前回の指示', '再起動前の入力を ↑ で再利用できる');
   });
 });
 

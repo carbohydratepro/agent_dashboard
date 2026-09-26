@@ -184,16 +184,10 @@ export async function* runProcess(opts: RunOpts): AsyncGenerator<ProcEvent> {
     closeSync(errFd);
   }
 
-  const pid = child.pid;
-  if (pid === undefined) {
-    yield { t: 'exit', code: null, signal: null, stderr: '起動できませんでした' };
-    return;
-  }
-  child.unref();
-  opts.onStarted?.({ pid, outFile });
-
   let exit: { code: number | null; signal: string | null } | null = null;
   let spawnError = '';
+  // cwd 不在などの起動失敗は次の tick で error として届く。pid 判定より先に
+  // 購読しないと未処理の error になり、ダッシュボード全体が終了してしまう。
   child.on('error', (err) => {
     spawnError = String(err);
     exit = { code: null, signal: null };
@@ -201,6 +195,12 @@ export async function* runProcess(opts: RunOpts): AsyncGenerator<ProcEvent> {
   child.on('close', (code, signal) => {
     exit = { code, signal };
   });
+
+  const pid = child.pid;
+  if (pid !== undefined) {
+    child.unref();
+    opts.onStarted?.({ pid, outFile });
+  }
 
   let onAbort: (() => void) | undefined;
   if (opts.signal) {
@@ -225,7 +225,7 @@ export async function* runProcess(opts: RunOpts): AsyncGenerator<ProcEvent> {
   }
 
   try {
-    yield* follow(outFile, errFile, 0, opts.onRawLine, () => exit, spawnError);
+    yield* follow(outFile, errFile, 0, opts.onRawLine, () => exit, () => spawnError);
   } finally {
     if (opts.signal && onAbort) opts.signal.removeEventListener('abort', onAbort);
   }
@@ -275,7 +275,7 @@ export async function* attachProcess(opts: {
       opts.onRawLine,
       // 終了コードは分からない。生きているかどうかだけ見る。
       () => (isAlive(opts.pid) ? null : { code: null, signal: null }),
-      '',
+      () => '',
     );
   } finally {
     if (opts.signal && onAbort) opts.signal.removeEventListener('abort', onAbort);
@@ -289,7 +289,7 @@ async function* follow(
   offset: number,
   onRawLine: ((line: string) => void) | undefined,
   exitOf: () => { code: number | null; signal: string | null } | null,
-  spawnError: string,
+  spawnErrorOf: () => string,
 ): AsyncGenerator<ProcEvent> {
   const tail = new Tail(outFile, offset);
 
@@ -310,7 +310,7 @@ async function* follow(
     if (done) {
       // 死んだあとに書き込まれたぶんが残っていることがある
       for (const e of emit(tail.drain())) yield e;
-      const stderr = [spawnError, readStderr(errFile)].filter((t) => t !== '').join('\n');
+      const stderr = [spawnErrorOf(), readStderr(errFile)].filter((t) => t !== '').join('\n');
       yield { t: 'exit', code: done.code, signal: done.signal, stderr };
       return;
     }

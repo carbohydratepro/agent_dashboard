@@ -6,6 +6,8 @@ export interface Theme {
   bg: number;
   panelBg: number;
   rowAlt: number;
+  /** 一覧で現在選んでいる行。通常背景と明確に区別できる色。 */
+  selectionBg: number;
   border: number;
   text: number;
   textDim: number;
@@ -24,6 +26,7 @@ export const DEFAULT_THEME: Theme = {
   bg: 0x0e1116,
   panelBg: 0x161b22,
   rowAlt: 0x12161c,
+  selectionBg: 0x264f78,
   border: 0x30363d,
   text: 0xc9d1d9,
   textDim: 0x768390,

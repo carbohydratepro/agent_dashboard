@@ -492,16 +492,42 @@ describe('モデルの指定が実際に効く', () => {
   });
 
   /** codex の代わりに、渡された引数をそのまま出すだけのものを起動する */
-  async function argsOf(model: string | null): Promise<string[]> {
+  async function argsOf(model: string | null, isRepo = false): Promise<string[]> {
     const bin = join(dir, 'fake-codex');
     writeFileSync(bin, '#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n', { mode: 0o755 });
 
     const seen: string[] = [];
-    const driver = new CodexDriver({ bin });
+    const driver = new CodexDriver({
+      bin,
+      git: {
+        run: async () => ({ ok: isRepo, stdout: isRepo ? 'true\n' : '', stderr: '' }),
+      },
+    });
     for await (const _ of driver.resume('thread-1', {
       prompt: 'やって',
       cwd: dir,
       model,
+      onRawLine: (line) => seen.push(line),
+    })) {
+      void _;
+    }
+    return seen;
+  }
+
+  async function startArgsOf(isRepo = false): Promise<string[]> {
+    const bin = join(dir, 'fake-codex');
+    writeFileSync(bin, '#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n', { mode: 0o755 });
+
+    const seen: string[] = [];
+    const driver = new CodexDriver({
+      bin,
+      git: {
+        run: async () => ({ ok: isRepo, stdout: isRepo ? 'true\n' : '', stderr: '' }),
+      },
+    });
+    for await (const _ of driver.start({
+      prompt: 'やって',
+      cwd: dir,
       onRawLine: (line) => seen.push(line),
     })) {
       void _;
@@ -521,8 +547,25 @@ describe('モデルの指定が実際に効く', () => {
     );
   });
 
-  test('指定していなければ何も足さない', async () => {
+  test('Git 管理外ではリポジトリ確認をスキップする', async () => {
     const args = await argsOf(null);
+    assert.deepEqual(args, [
+      'exec',
+      'resume',
+      '--json',
+      '--skip-git-repo-check',
+      'thread-1',
+      'やって',
+    ]);
+  });
+
+  test('新規セッションも Git 管理外で開始できる', async () => {
+    const args = await startArgsOf();
+    assert.deepEqual(args, ['exec', '--skip-git-repo-check', 'やって', '--json']);
+  });
+
+  test('Git リポジトリ内ではリポジトリ確認を維持する', async () => {
+    const args = await argsOf(null, true);
     assert.deepEqual(args, ['exec', 'resume', '--json', 'thread-1', 'やって']);
   });
 });

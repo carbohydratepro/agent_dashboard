@@ -227,8 +227,15 @@ export class Persistence {
       loaded.push({
         session: {
           ...session,
+          // 会話タイトル追加前の保存データもそのまま読み込めるようにする。
+          conversationTitle:
+            typeof session.conversationTitle === 'string' && session.conversationTitle.trim() !== ''
+              ? session.conversationTitle
+              : null,
           // 控えは以前 1 件だけの nextPrompt だった。古い保存を拾い直す。
           drafts: session.drafts ?? migrateNextPrompt(session as unknown as LegacySession),
+          // 全期間集計を追加する前の保存データは、起動後に CLI ログから補う。
+          lifetime: session.lifetime ?? null,
           // 走っていたプロセスはもう居ない。ただし切り離した子が生きていれば別。
           state: stillRunning ? 'working' : 'offline',
           subagents: [],
@@ -305,6 +312,7 @@ export class Persistence {
     const path = this.rawPath(sessionId);
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${line}\n`);
+    this.rotateRawIfNeeded(sessionId);
   }
 
   /** 大きくなりすぎたら退避する。戻り値は退避したかどうか。 */

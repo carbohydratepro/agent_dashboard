@@ -137,6 +137,44 @@ export interface SessionStats {
   totalTokensOut: number;
 }
 
+/** CLI の保存ログから復元した、会話開始時点からのトークン実績。 */
+export interface TokenUsage {
+  inputTokens: number;
+  /** inputTokens の内数。プロバイダが値を出さない場合は 0。 */
+  cachedInputTokens: number;
+  outputTokens: number;
+  /** outputTokens の内数。Codex のみ取得できる。 */
+  reasoningTokens: number;
+  totalTokens: number;
+}
+
+/**
+ * CLI セッション全期間の実績。
+ *
+ * stats / uptime はダッシュボードが管理を始めてからの月次会計に使うため、
+ * 過去ログ由来の値は混ぜずに別で持つ。
+ */
+export interface SessionLifetime {
+  /** CLI セッションの最初の記録。時刻を取得できなければ null。 */
+  startedAt: number | null;
+  /** ログに完了時刻があるターンの実働時間合計。 */
+  activeMs: number;
+  tasksCompleted: number;
+  filesEdited: number;
+  commandsRun: number;
+  tokens: TokenUsage;
+  /** 現在の会話コンテキスト。累計消費量とは別。 */
+  contextTokens: number;
+  contextWindow: number;
+  hasTokenUsage: boolean;
+  hasTiming: boolean;
+  /** 完了ターン所要時間の中央値。完了目安を出すための参考値。 */
+  typicalTurnMs?: number;
+  /** typicalTurnMs の算出に使えた完了ターン数。 */
+  timedTurns?: number;
+  updatedAt: number;
+}
+
 export interface Recovery {
   attempts: number;
   lastError: string | null;
@@ -166,6 +204,8 @@ export interface Session {
 
   /** 一覧に出す短い識別名（例 'claude-1'） */
   name: string;
+  /** CLI が生成した会話タイトル。まだ生成されていなければ null。 */
+  conversationTitle: string | null;
   /** 一覧で見分けるための色。意味は持たない。 */
   color: string;
   role: Role;
@@ -196,6 +236,8 @@ export interface Session {
   context: ContextInfo;
   uptime: Uptime;
   stats: SessionStats;
+  /** CLI ログが読めたときだけ入る、会話開始時点からの実績。 */
+  lifetime: SessionLifetime | null;
 
   lastError: string | null;
   archived: boolean;
@@ -227,6 +269,7 @@ export interface Dashboard {
 
 export type AgentEvent =
   | { t: 'session_started'; sessionId: string; model: string }
+  | { t: 'user_message'; text: string }
   | { t: 'requesting' }
   | { t: 'thinking'; estimatedTokens: number }
   | { t: 'text'; delta: string; parentToolUseId?: string }
