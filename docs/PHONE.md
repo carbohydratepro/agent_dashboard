@@ -18,54 +18,74 @@ ClientAliveInterval 30         # 電波が悪いところで切れかけを落�
 
 設定は `/etc/ssh/sshd_config.d/60-dashboard.conf`。`systemctl status sshd` で状態を見る。
 
+## 外から届ける（Tailscale）
+
+WSL2 の中に Tailscale を入れてある（`tailscaled` は systemd で常駐）。
+Tailscale の IP が WSL に直接付くので、Windows 側の portproxy や
+`.wslconfig` の mirrored 設定は要らない。ルータのポート開放もしない。
+
+この文書は公開リポジトリにあるので、実際の IP は書かない。`tailscale status` で調べる。
+IP は端末を削除して登録し直さない限り変わらない。
+
+### Tailscale SSH は使わない
+
+2026-10-25 に Tailscale SSH の未修正の脆弱性（Tailworm）が公開された。
+ここでは Tailscale を通り道にだけ使い、ログインは OpenSSH（2222 番）で行う。
+
+- PC は `--ssh=false` で上げてある（`sudo tailscale debug prefs` の `RunSSH` が false）
+- ACL には `ssh` 節を置かない。Serve / Funnel も使わない
+- ACL は「スマホから PC の 2222 番だけ」に絞ってある
+
+```json
+{
+  "hosts": {
+    "pc":    "<PC の Tailscale IP>",
+    "phone": "<スマホの Tailscale IP>"
+  },
+  "grants": [
+    { "src": ["phone"], "dst": ["pc"], "ip": ["tcp:2222"] }
+  ]
+}
+```
+
+端末を足すときは `hosts` と `grants` に追記する。
+
+PC の Tailscale ログインが切れたら（既定で 180 日）、`sudo tailscale login` で
+出る URL を開いて承認し直す。
+
 ## スマホ側の手順
 
 ### 1. 鍵を作る
 
-SSH クライアント（Termius、Blink など）で鍵を作る。**秘密鍵は PC から持ち出さず、
-スマホ側で作って公開鍵だけを渡す**。
+Termius の Keychain → ＋ → Generate Key で ED25519 の鍵を作り、パスフレーズを付ける。
+**秘密鍵はスマホから出さず、公開鍵だけを PC に渡す**。
 
 ### 2. 公開鍵を PC に登録する
 
 ```bash
-echo 'ssh-ed25519 AAAA... phone' >> ~/.ssh/authorized_keys
+echo 'ssh-ed25519 AAAA... phone-termius' >> ~/.ssh/authorized_keys
 ```
 
-### 3. Windows 側で転送する（WSL2 のため必要）
+端末ごとに別の鍵にする。なくしたらその行を消せば締め出せる。
 
-WSL2 は Windows とは別の IP を持つので、そのままでは外から届かない。
-**管理者権限の PowerShell** で次を実行する。
+### 3. 繋ぐ
 
-```powershell
-# WSL の現在の IP を調べて転送する
-$ip = (wsl -d Ubuntu -e sh -c "ip -4 addr show eth0 | grep -oP 'inet \K[\d.]+'").Trim()
-netsh interface portproxy add v4tov4 listenport=2222 listenaddress=0.0.0.0 connectport=2222 connectaddress=$ip
-New-NetFirewallRule -DisplayName "WSL dashboard SSH" -Direction Inbound -LocalPort 2222 -Protocol TCP -Action Allow
-```
+Termius の Host 設定:
 
-**WSL の IP は再起動のたびに変わる**ので、そのつど登録し直す必要がある。
-毎回やりたくなければ、`C:\Users\masas\.wslconfig` に次を書いて WSL を再起動する
-（Windows 11 22H2 以降）。IP が Windows と共有になり、転送そのものが不要になる。
+| 項目 | 値 |
+|---|---|
+| Address | PC の Tailscale IP |
+| Port | `2222` |
+| Username | `carbohydratepro` |
+| Key | 1 で作った鍵（Password は空のまま） |
+| Use SSH | オン（Mosh はオフ） |
 
-```ini
-[wsl2]
-networkingMode=mirrored
-```
+初回はホスト鍵の確認が出る。Termius は ECDSA の鍵を見せるので、
+`ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub` の値と照らす。
 
-### 4. 繋ぐ
-
-```
-ssh -p 2222 carbohydratepro@<PC の IP> -t ~/agent_dashboard/scripts/dash
-```
-
-`scripts/dash` は tmux セッション `dash` に繋ぐ（無ければ作る）。
-SSH が切れても中は動き続けるので、入り直して同じコマンドを打てば元の画面に戻る。
-
-## 外出先から
-
-上記は同じ LAN にいる前提。携帯回線から使うなら、ルータのポート開放ではなく
-**Tailscale** を勧める。PC とスマホに入れるだけで、WSL の IP が変わる問題も、
-ポート開放の危険も避けられる。
+入ったら `~/agent_dashboard/scripts/dash` を打つ。tmux セッション `dash` に繋ぐ
+（無ければ作る）。SSH が切れても中は動き続けるので、入り直して同じコマンドを打てば
+元の画面に戻る。
 
 ## 画面の狭さ
 
